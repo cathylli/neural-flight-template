@@ -2,6 +2,7 @@ import { manifest as cloudTowers } from "./cloud-towers";
 import { manifest as gradientPrism } from "./gradient-prism";
 import { manifest as mountainFlight } from "./mountain-flight";
 import { manifest as shaderDemo } from "./shader-demo";
+import { manifest as myExp } from "./myExp";
 import type { ExperienceManifest } from "./types";
 
 // ── Registry ──
@@ -13,25 +14,26 @@ import type { ExperienceManifest } from "./types";
 // The ID must match the folder name and the manifest.id field.
 
 const CATALOG: Record<string, ExperienceManifest> = {
-	"cloud-towers": cloudTowers,
-	"gradient-prism": gradientPrism,
-	"mountain-flight": mountainFlight,
-	"shader-demo": shaderDemo,
+  "cloud-towers": cloudTowers,
+  "gradient-prism": gradientPrism,
+  "mountain-flight": mountainFlight,
+  "shader-demo": shaderDemo,
+  myExp: myExp,
 };
 
 export const DEFAULT_EXPERIENCE_ID = "mountain-flight";
 
 /** Get experience by ID — throws with available IDs if not found */
 export function getExperience(id: string): ExperienceManifest {
-	const exp = CATALOG[id];
-	if (!exp) {
-		const available = Object.keys(CATALOG).join(", ");
-		throw new Error(`Experience "${id}" not found. Available: [${available}]`);
-	}
-	return exp;
+  const exp = CATALOG[id];
+  if (!exp) {
+    const available = Object.keys(CATALOG).join(", ");
+    throw new Error(`Experience "${id}" not found. Available: [${available}]`);
+  }
+  return exp;
 }
 
 /** List all available experiences (for Landing Page catalog) */
 export function listExperiences(): ExperienceManifest[] {
-	return Object.values(CATALOG);
+  return Object.values(CATALOG);
 }
