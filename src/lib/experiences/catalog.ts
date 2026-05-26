@@ -2,7 +2,7 @@ import { manifest as cloudTowers } from "./cloud-towers";
 import { manifest as gradientPrism } from "./gradient-prism";
 import { manifest as mountainFlight } from "./mountain-flight";
 import { manifest as shaderDemo } from "./shader-demo";
-import { manifest as myExp } from "./myExp";
+import { manifest as dataSpaceFlightManifest } from "./myExp"; // Renamed import alias for clarity
 import type { ExperienceManifest } from "./types";
 
 // ── Registry ──
@@ -18,7 +18,7 @@ const CATALOG: Record<string, ExperienceManifest> = {
   "gradient-prism": gradientPrism,
   "mountain-flight": mountainFlight,
   "shader-demo": shaderDemo,
-  myExp: myExp,
+  "data-space-flight": dataSpaceFlightManifest, // Key must match manifest.id
 };
 
 export const DEFAULT_EXPERIENCE_ID = "mountain-flight";

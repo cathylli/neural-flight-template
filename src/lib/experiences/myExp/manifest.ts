@@ -21,8 +21,8 @@ const parameters: ParameterDef[] = [
     id: "haze-density",
     label: "Cyber-Smog",
     group: "Atmosphere",
-    min: 0.0001,
-    max: 0.02,
+    min: 0.01,
+    max: 0.9,
     default: 0.005,
     step: 0.0001,
     icon: "Cloud",
@@ -47,6 +47,16 @@ const parameters: ParameterDef[] = [
     step: 0.01,
     icon: "Cpu",
   },
+  {
+    id: "terrainHeight",
+    label: "Data Floor Wave",
+    group: "Atmosphere",
+    min: 0,
+    max: 100,
+    default: 0,
+    step: 1,
+    icon: "Mountain",
+  },
 ];
 
 // ── Manifest ───────────────────────────────────────────────────
@@ -68,15 +78,16 @@ export const manifest: ExperienceManifest = {
   camera: { fov: 70, near: 0.1, far: 1000 },
   scene: {
     background: "#000000",
-    fogNear: 50,
-    fogFar: 800,
+    // Fog is handled by FogExp2 in scene.ts, but loader.ts still needs these placeholders
+    fogNear: 1, // Small value to ensure fog is initialized by loader.ts
+    fogFar: 2,  // Small value to ensure fog is initialized by loader.ts
     fogColor: "#0a0a1a",
-    ambientIntensity: 0.5,
-    sunIntensity: 1.0,
+    ambientIntensity: 0.8, // Increased ambient light
+    sunIntensity: 1.2,     // Increased sun intensity
     sunColor: "#ffffff",
     sunPosition: { x: 0, y: 100, z: 0 },
   },
-  spawn: { position: { x: 0, y: 50, z: 0 } },
+  spawn: { position: { x: 0, y: 0, z: 0 } }, // Start closer to the generated cubes
 
   // ── Lifecycle ──
   setup,

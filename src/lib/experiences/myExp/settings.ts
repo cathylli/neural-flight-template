@@ -20,7 +20,17 @@ export function applySettings(
     case "haze-density":
     case "enduser-density":
     case "ai-density":
+      if (id === "haze-density" && _scene.fog instanceof THREE.FogExp2) {
+        _scene.fog.density = value as number;
+      }
+      // Forward to world manager for infrastructure density changes
       s.world.applySettings(id, value);
+      break;
+
+    case "terrainHeight":
+      if (s.terrain) {
+        s.terrain.material.uniforms.uTerrainHeight.value = value as number;
+      }
       break;
 
     default:
