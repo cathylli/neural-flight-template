@@ -2,7 +2,7 @@ import { manifest as cloudTowers } from "./cloud-towers";
 import { manifest as gradientPrism } from "./gradient-prism";
 import { manifest as mountainFlight } from "./mountain-flight";
 import { manifest as shaderDemo } from "./shader-demo";
-import { manifest as dataSpaceFlightManifest } from "./myExp"; // Renamed import alias for clarity
+import { manifest as dataSpaceFlightManifest } from "./cube-cluster"; // Renamed import alias for clarity
 import type { ExperienceManifest } from "./types";
 
 // ── Registry ──
