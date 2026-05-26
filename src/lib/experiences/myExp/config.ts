@@ -6,7 +6,8 @@ export const WORLD = {
 	CUBE_HEIGHT_VARIATION: 100,
 	CUBE_BASE_Y: 0,
 	TERRAIN_COLOR: 0x050510,
-	GRID_COLOR: 0x27F5EB,
+	STREAM_HEIGHT: 8,
+	GRID_COLOR: 0x111133,
 	GRID_SECONDARY_COLOR: 0x111133,
 	GRID_DIVISIONS: 32
 };
@@ -38,4 +39,11 @@ export const CUBE_TYPES = {
 export const NOISE = {
 	SCALE: 0.006, // Lower scale = larger clusters (islands)
 	DENSITY_THRESHOLD: 0.5 // Higher threshold = more empty space between clusters
+};
+
+export const STREAM = {
+	PACKAGE_SIZE: 1.0,
+	PACKAGE_SPEED: 0.25, // Percent of chunk length per second
+	PACKAGES_PER_STREAM: 6,
+	COLOR: 0x00f3ff // Electric Cyan
 };

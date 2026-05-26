@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
-import { WORLD, CUBE_TYPES, NOISE } from './config';
+import { WORLD, CUBE_TYPES, NOISE, STREAM } from './config';
 
 // Local deterministic random to ensure chunk consistency without external dependencies
 function chunkRandom(x: number, z: number, seed: number) {
@@ -14,6 +14,7 @@ class DataChunk {
 	group: THREE.Group;
 	spawnTime: number;
 	cubes: THREE.InstancedMesh[] = [];
+	streamMesh: THREE.InstancedMesh | null = null;
 	terrain: THREE.Mesh | null = null;
 	grid: THREE.GridHelper | null = null;
 	private simplex: SimplexNoise;
@@ -48,8 +49,20 @@ class DataChunk {
 
 	generate(scene: THREE.Scene) {
 		this.generateCubes();
+		this.generateStreams();
 		this.generateTerrain();
 		scene.add(this.group);
+	}
+
+	private generateStreams() {
+		const totalPackages = STREAM.PACKAGES_PER_STREAM * 2; // X and Z directions
+		this.streamMesh = new THREE.InstancedMesh(
+			this.sharedGeometries.get('package')!,
+			this.sharedMaterials.get('package')!,
+			totalPackages
+		);
+		this.streamMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+		this.group.add(this.streamMesh);
 	}
 
 	private generateTerrain() {
@@ -240,6 +253,30 @@ class DataChunk {
 			
 			if (isFinished) mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
 		});
+
+		// Update Data Package Streams
+		if (this.streamMesh) {
+			const tempMatrix = new THREE.Matrix4();
+			const tempPosition = new THREE.Vector3();
+			const tempScale = new THREE.Vector3(1, 1, 1);
+			const tempQuaternion = new THREE.Quaternion();
+
+			for (let i = 0; i < STREAM.PACKAGES_PER_STREAM; i++) {
+				const offset = i / STREAM.PACKAGES_PER_STREAM;
+				const progress = (elapsed * STREAM.PACKAGE_SPEED + offset) % 1.0;
+				
+				// Package moving in X direction (to East neighbor)
+				tempPosition.set(progress * WORLD.CHUNK_SIZE - WORLD.CHUNK_SIZE / 2, WORLD.STREAM_HEIGHT, 0);
+				tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
+				this.streamMesh.setMatrixAt(i, tempMatrix);
+
+				// Package moving in Z direction (to North neighbor)
+				tempPosition.set(0, WORLD.STREAM_HEIGHT, progress * WORLD.CHUNK_SIZE - WORLD.CHUNK_SIZE / 2);
+				tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
+				this.streamMesh.setMatrixAt(i + STREAM.PACKAGES_PER_STREAM, tempMatrix);
+			}
+			this.streamMesh.instanceMatrix.needsUpdate = true;
+		}
 	}
 
 	dispose(scene: THREE.Scene) {
@@ -294,6 +331,17 @@ export class DataSpaceWorld {
 				})
 			);
 		}
+
+		// Shared resources for data packages
+		this.geometries.set('package', new THREE.BoxGeometry(STREAM.PACKAGE_SIZE, STREAM.PACKAGE_SIZE, STREAM.PACKAGE_SIZE));
+		this.materials.set('package', new THREE.MeshPhongMaterial({
+			color: STREAM.COLOR,
+			emissive: STREAM.COLOR,
+			emissiveIntensity: 3.0,
+			transparent: true,
+			opacity: 0.8
+		}));
+
 		this.materials.set('terrain', new THREE.MeshPhongMaterial({
 			color: WORLD.TERRAIN_COLOR,
 			shininess: 10
