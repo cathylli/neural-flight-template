@@ -32,37 +32,26 @@ const parameters: ParameterDef[] = [
 		unit: "m/s",
 		icon: "Gauge",
 	},
-	{
-		id: "rotationEnabled",
-		label: "Block Rotation",
-		group: "Movement",
-		type: "boolean",
-		min: 0,
-		max: 1,
-		default: true,
-		step: 1,
-		icon: "RotateCw",
-	},
 
 	// ── Scene ───────────────────────────────────────
 	{
-		id: "blockCount",
-		label: "Block Count",
+		id: "traceDensity",
+		label: "Trace Density",
 		group: "Scene",
-		min: 5,
-		max: 100,
-		default: 30,
-		step: 1,
-		icon: "Box",
+		min: 50,
+		max: 500,
+		default: 150,
+		step: 10,
+		icon: "Cpu",
 	},
 	{
-		id: "blockColor",
-		label: "Block Color",
+		id: "traceColor",
+		label: "Trace Color",
 		group: "Scene",
 		type: "color",
 		min: 0,
 		max: 1,
-		default: "#111111",
+		default: "#00ff33", // Solid green LED glow
 		step: 1,
 		icon: "Palette",
 	},
@@ -75,32 +64,30 @@ const parameters: ParameterDef[] = [
 
 export const manifest: ExperienceManifest = {
 	// ── Identity ──
-	// TODO: Ändere diese Felder für deine eigene Experience!
-	id: "my-experience", // kebab-case, muss einzigartig sein
-	name: "My Experience", // Anzeigename im Catalog
-	description: "TODO: Beschreibe deine Experience in einem Satz",
+	id: "circuit",
+	name: "Circuit",
+	description: "A generative flat circuit board environment",
 	version: "0.1.0",
-	author: "TODO: Dein Name",
+	author: "AI",
 
 	// ── I/O Contract ──
 	parameters,
-	outputs: [], // Optional: Werte die deine Experience zurückgibt (z.B. Score)
-	interfaces: { orientation: true, speed: false }, // Welche Inputs brauchst du?
+	outputs: [],
+	interfaces: { orientation: true, speed: false },
 
 	// ── Scene Defaults ──
-	// Diese Werte setzt der Loader bevor setup() aufgerufen wird
 	camera: { fov: 70, near: 0.1, far: 500 },
 	scene: {
-		background: "#1a1a2e", // Dunkler Himmel
-		fogNear: 20,
-		fogFar: 150,
-		fogColor: "#1a1a2e", // Fog-Farbe = Background für nahtlosen Übergang
-		ambientIntensity: 0.4,
-		sunIntensity: 1.5,
+		background: "#020205", // Dark void
+		fogNear: 50,
+		fogFar: 300,
+		fogColor: "#020205",
+		ambientIntensity: 0.2,
+		sunIntensity: 0.5,
 		sunColor: "#ffffff",
 		sunPosition: { x: 50, y: 80, z: 30 },
 	},
-	spawn: { position: { x: 0, y: 2, z: 0 } },
+	spawn: { position: { x: 0, y: 5, z: 0 } },
 
 	// ── Lifecycle ──
 	// Diese Funktionen werden von der Plattform aufgerufen:
