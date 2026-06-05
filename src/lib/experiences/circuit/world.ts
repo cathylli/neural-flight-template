@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { CyberpunkCityManager, type StaticStation } from "./cyberpunk-city";
+import { GlowingTowersManager } from "./glowing-towers-manager";
 
 // ── CyberpunkCityManager integration ──
 // Basic setup
@@ -269,9 +269,9 @@ export class CircuitWorld {
   private chunks: Map<string, CircuitChunk> = new Map();
   private material: THREE.ShaderMaterial;
   private density: number;
-  private readonly VIEW_DISTANCE = 2;
+  private VIEW_DISTANCE = 2;
   private globalAutomataTime: number = 0;
-  private cyberpunkCity: CyberpunkCityManager;
+  private glowingTowers: GlowingTowersManager;
 
   private customShaderUniforms: { [key: string]: THREE.IUniform } = {
     uTime: { value: 0.0 },
@@ -330,19 +330,7 @@ export class CircuitWorld {
             `,
     });
 
-    // Initialize cyberpunk city with some static stations (exclusion zones)
-    const staticStations: StaticStation[] = [
-      { x: 0, z: -100, radius: 30 }, // Main hub
-      { x: 50, z: -500, radius: 50 }, // Secondary station
-      { x: -80, z: -200, radius: 25 }, // Power node
-    ];
-
-    this.cyberpunkCity = new CyberpunkCityManager(
-      this.scene,
-      initialPosition,
-      staticStations,
-    );
-    this.cyberpunkCity.init();
+    this.glowingTowers = new GlowingTowersManager(this.scene);
 
     this.updateChunks();
   }
@@ -361,8 +349,12 @@ export class CircuitWorld {
     this.globalAutomataTime += safeDelta * speedMultiplier * 1.5;
     this.customShaderUniforms.uTime.value = this.globalAutomataTime;
 
-    // Update cyberpunk city (buildings grow as player approaches)
-    this.cyberpunkCity.update(playerPosition.z, safeDelta);
+    // Update glowing towers
+    this.glowingTowers.update(
+      playerPosition.x,
+      playerPosition.z,
+      this.globalAutomataTime,
+    );
 
     // Chunk-Management (alle 10 Einheiten prüfen)
     const distanceGained = this.playerPosition.distanceTo(playerPosition);
@@ -418,8 +410,7 @@ export class CircuitWorld {
         this.customShaderUniforms.uColor.value.set(value);
       }
     } else if (id === "neonIntensity") {
-      // Handle cyberpunk city neon intensity
-      this.cyberpunkCity.setNeonIntensity(value as number);
+      this.glowingTowers.setNeonIntensity(value as number);
     }
   }
 
@@ -427,5 +418,6 @@ export class CircuitWorld {
     this.chunks.forEach((chunk) => chunk.dispose(this.scene));
     this.chunks.clear();
     this.material.dispose();
+    this.glowingTowers.dispose();
   }
 }
