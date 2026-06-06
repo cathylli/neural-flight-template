@@ -113,6 +113,14 @@ export const CLOUDS = {
 	DRIFT_DIRECTION: { x: 1, z: 0.3 },
 } as const;
 
+// ── Spatial Audio ──
+export const AUDIO = {
+  MASTER_VOLUME: 1.0,
+  AMBIENT_DRONE: { volume: 0.25, frequency: 55 },
+  ENGINE: { volume: 0.12, baseRate: 1.0, minRate: 0.5, maxRate: 1.8 },
+  POSITIONAL: { rolloffFactor: 2, refDistance: 3, maxDistance: 80 },
+} as const;
+
 // ── Sky ──
 export const SKY = {
 	RADIUS: 800,

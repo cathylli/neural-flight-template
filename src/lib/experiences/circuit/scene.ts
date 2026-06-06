@@ -4,11 +4,15 @@ import { FlightPlayer } from "$lib/three/player";
 import { CircuitWorld } from "./world";
 import { manifest } from "./manifest";
 import { GridExplosionLogic } from "./browser.ts";
+import { SpatialAudio } from "$lib/three/spatial-audio";
+import { AUDIO } from "$lib/config/flight";
 
 export interface CircuitState extends ExperienceState {
   world: CircuitWorld;
   player: FlightPlayer;
   gridExplosion: GridExplosionLogic;
+  audio: SpatialAudio;
+  engineSound: THREE.PositionalAudio;
 }
 
 export async function setup(ctx: SetupContext): Promise<CircuitState> {
@@ -23,6 +27,13 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
     baseSpeed: defaultSpeed,
   });
   ctx.scene.add(player.rig);
+
+  // Spatial Audio
+  const audio = new SpatialAudio(player.camera);
+  audio.initXR(ctx.renderer);
+  audio.createAmbientDrone(player.rig);
+  const engineSound = audio.createEngineSound(player.rig);
+  audio.createBackgroundMusic("/experiences/circuit/background.mp3", 0.4);
 
   // Welt-Struktur mit Startwerten generieren
   const initialDensity = 150;
@@ -61,6 +72,8 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
     player,
     camera: player.camera,
     gridExplosion,
+    audio,
+    engineSound,
   };
 }
 
@@ -76,6 +89,15 @@ export function tick(
   // Übergibt die aktuelle Position des Spielers an das Chunk-Management
   s.world.update(s.player.rig.position, ctx.delta);
 
+  // Engine sound pitch folgt der Geschwindigkeit
+  const speedRatio = s.player.velocity / s.player.baseSpeed;
+  const rate = THREE.MathUtils.lerp(
+    AUDIO.ENGINE.minRate,
+    AUDIO.ENGINE.maxRate,
+    Math.min(1, speedRatio / 2),
+  );
+  s.engineSound.setPlaybackRate(rate);
+
   // GridExplosion: Partikel sind gebündelt und fliegen explosionsartig
   // auseinander, sobald sich der Spieler dem Grid nähert.
   const explosionProgress = computeExplosionProgress(s);
@@ -87,6 +109,7 @@ export function tick(
 export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   const s = state as CircuitState;
 
+  s.audio.dispose();
   s.world.dispose();
   scene.remove(s.player.rig);
 
