@@ -4,6 +4,7 @@ import { FlightPlayer } from "$lib/three/player";
 import { CircuitWorld } from "./world";
 import { manifest } from "./manifest";
 import { GridExplosionLogic } from "./browser.ts";
+import { StartSequence } from "./start-sequence";
 
 export interface CircuitState extends ExperienceState {
   world: CircuitWorld;
@@ -13,6 +14,8 @@ export interface CircuitState extends ExperienceState {
   backgroundAudio: THREE.Audio;
   explosionSound: THREE.PositionalAudio;
   explosionPlayed: boolean;
+  startSequence: StartSequence;
+  introDone: boolean;
 }
 
 export async function setup(ctx: SetupContext): Promise<CircuitState> {
@@ -42,8 +45,8 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
   // GridExplosionLogic: Flottes Punktraster, das sich auf Wunsch zu einer
   // geordneten Matrix formiert (oder wieder in die Streuung zurückfällt).
   const gridExplosion = new GridExplosionLogic({
-    gridSize: 50,
-    spacing: 0.9,
+    gridSize: 100,
+    spacing: 0.6,
     dotRadius: 0.2,
     scatterPower: 80,
     dispersionZ: 35,
@@ -113,6 +116,11 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
     );
   }
 
+  // ── Start Sequence ──
+  const startSequence = new StartSequence();
+  player.camera.add(startSequence.group);
+  startSequence.start();
+
   return {
     world,
     player,
@@ -122,6 +130,8 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
     backgroundAudio,
     explosionSound,
     explosionPlayed: false,
+    startSequence,
+    introDone: false,
   };
 }
 
@@ -130,6 +140,17 @@ export function tick(
   ctx: TickContext,
 ): { state: ExperienceState; outputs?: Record<string, number> } {
   const s = state as CircuitState;
+
+  // ── Start Sequence ──
+  if (!s.introDone) {
+    s.startSequence.update(ctx.elapsed);
+    if (s.startSequence.done) {
+      s.introDone = true;
+      s.startSequence.group.removeFromParent();
+      s.startSequence.dispose();
+    }
+    return { state: s };
+  }
 
   // Spieler-Physik basierend auf der Frametime (delta) berechnen
   s.player.tick(ctx.delta);
@@ -156,6 +177,10 @@ export function tick(
 export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   const s = state as CircuitState;
 
+  if (s.startSequence) {
+    s.startSequence.group.removeFromParent();
+    s.startSequence.dispose();
+  }
   s.backgroundAudio.stop();
   s.explosionSound.stop();
   if (s.explosionSound.parent) {
