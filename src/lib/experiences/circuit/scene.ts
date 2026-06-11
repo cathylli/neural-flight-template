@@ -34,7 +34,7 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
 
   // Welt-Struktur mit Startwerten generieren
   const initialDensity = 150;
-  const initialColor = "#00ff33";
+  const initialColor = "#0037ff";
   const world = new CircuitWorld(
     ctx.scene,
     player.rig.position,
@@ -56,13 +56,20 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
 
   // Mesh vor den Spieler setzen, sodass es im Vorbeiflug sichtbar wird.
   const explosionMesh = gridExplosion.getMesh();
+  const cubeMesh = gridExplosion.getCubeMesh();
+
+  const gridPos = new THREE.Vector3(0, 30, -200);
+
   if (explosionMesh) {
-    // Ein paar Meter vor dem Spawn, auf Spielerhöhe (Spawn-y = 5).
-    explosionMesh.position.set(0, 30, -200);
-    // Billboarding deaktivieren: Punkte sollen Teil der Welt sein,
-    // nicht an der Kamera kleben.
+    explosionMesh.position.copy(gridPos);
     explosionMesh.frustumCulled = false;
     ctx.scene.add(explosionMesh);
+  }
+
+  if (cubeMesh) {
+    cubeMesh.position.copy(gridPos);
+    cubeMesh.frustumCulled = false;
+    ctx.scene.add(cubeMesh);
   }
 
   // ── Background Audio ──
@@ -161,7 +168,7 @@ export function tick(
   // GridExplosion: Partikel sind gebündelt und fliegen explosionsartig
   // auseinander, sobald sich der Spieler dem Grid nähert.
   const explosionProgress = computeExplosionProgress(s);
-  s.gridExplosion.update(explosionProgress);
+  s.gridExplosion.update(explosionProgress, ctx.delta);
 
   // Explosions-Sound einmalig abspielen, sobald die Partikel aufplatzen
   if (explosionProgress > 0.2 && !s.explosionPlayed) {
@@ -190,6 +197,18 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
 
   s.world.dispose();
   scene.remove(s.player.rig);
+
+  // Cube-Mesh entfernen
+  const cubeMesh = s.gridExplosion.getCubeMesh();
+  if (cubeMesh) {
+    scene.remove(cubeMesh);
+    cubeMesh.geometry.dispose();
+    if (Array.isArray(cubeMesh.material)) {
+      cubeMesh.material.forEach((mat) => mat.dispose());
+    } else {
+      cubeMesh.material.dispose();
+    }
+  }
 
   const explosionMesh = s.gridExplosion.getMesh();
   if (explosionMesh) {

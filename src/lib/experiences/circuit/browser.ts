@@ -24,6 +24,9 @@ export class GridExplosionLogic {
   private targetPositions: THREE.Vector3[] = [];
   private randomSeeds: SeedData[] = [];
   private instancedMesh: THREE.InstancedMesh | null = null;
+  private cubeMesh: THREE.Mesh | null = null;
+  private cubeBaseColor: THREE.Color;
+  private elapsed: number = 0;
   private dummy: THREE.Object3D;
 
   /**
@@ -45,6 +48,7 @@ export class GridExplosionLogic {
       config,
     ) as Required<GridConfig>;
 
+    this.cubeBaseColor = new THREE.Color(this.params.color as any);
     this.dummy = new THREE.Object3D();
 
     // Initialisiert die Geometrie und Vektoren
@@ -64,6 +68,15 @@ export class GridExplosionLogic {
         this.instancedMesh.material.dispose();
       }
     }
+    if (this.cubeMesh) {
+      this.cubeMesh.geometry.dispose();
+      if (Array.isArray(this.cubeMesh.material)) {
+        this.cubeMesh.material.forEach((mat) => mat.dispose());
+      } else {
+        this.cubeMesh.material.dispose();
+      }
+      this.cubeMesh = null;
+    }
 
     const count = this.params.gridSize * this.params.gridSize;
 
@@ -77,6 +90,15 @@ export class GridExplosionLogic {
     });
 
     this.instancedMesh = new THREE.InstancedMesh(geometry, material, count);
+    this.instancedMesh.visible = false;
+
+    // Solid cube mesh — erscheint als ganzer Würfel bevor die Explosion losgeht
+    const cubeSize = this.params.blobRadius * 2;
+    const cubeGeo = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+    const cubeMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(this.params.color as any),
+    });
+    this.cubeMesh = new THREE.Mesh(cubeGeo, cubeMat);
 
     this.targetPositions = [];
     this.randomSeeds = [];
@@ -119,11 +141,24 @@ export class GridExplosionLogic {
    * Berechnet die Positionen und Rotationen für alle Partikel neu.
    * @param progress - Wert zwischen 0 (Partikel gebündelt am Zentrum) und 1 (vollständig explodiert)
    */
-  public update(progress: number): void {
+  public update(progress: number, delta: number = 0): void {
     if (!this.instancedMesh) return;
 
-    // Progress-Wert sicherheitshalber zwischen 0 und 1 klammern
     const p = THREE.MathUtils.clamp(progress, 0, 1);
+    this.elapsed += delta;
+
+    // Cube sichtbar im Ruhezustand, Partikel während der Explosion
+    if (this.cubeMesh) {
+      this.cubeMesh.visible = p === 0;
+      if (p === 0) {
+        // Pulsieren zwischen Basis-Farbe und hellerem Farbton
+        const pulse = Math.sin(this.elapsed * 3) * 0.5 + 0.5;
+        const mat = this.cubeMesh.material as THREE.MeshBasicMaterial;
+        mat.color.copy(this.cubeBaseColor).lerp(new THREE.Color(0xffffff), pulse * 0.5);
+      }
+    }
+    this.instancedMesh.visible = p > 0;
+
     const count = this.targetPositions.length;
 
     // Sanfte Easing-Kurve: explodeEase > 1 = Ease-Out (langsam am Ende),
@@ -189,9 +224,16 @@ export class GridExplosionLogic {
   }
 
   /**
-   * Gibt das Mesh zurück, damit es der Scene hinzugefügt werden kann.
+   * Gibt das InstancedMesh (Partikel) zurück.
    */
   public getMesh(): THREE.InstancedMesh | null {
     return this.instancedMesh;
+  }
+
+  /**
+   * Gibt den soliden Würfel zurück.
+   */
+  public getCubeMesh(): THREE.Mesh | null {
+    return this.cubeMesh;
   }
 }
