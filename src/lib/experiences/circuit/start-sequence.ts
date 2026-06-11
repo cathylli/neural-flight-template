@@ -13,7 +13,7 @@ const TIMING = {
   charInterval: 0.065,
   sendPause: 1.0,
   sendDuration: 1.5,
-  flyThrough: 2.0,
+  fadeDuration: 1.0,
 };
 
 export class StartSequence {
@@ -25,14 +25,9 @@ export class StartSequence {
   private startTime = 0;
   private started = false;
   private _done = false;
-  private _flyThrough = 0;
 
   get done(): boolean {
     return this._done;
-  }
-
-  get flyThroughProgress(): number {
-    return this._flyThrough;
   }
 
   constructor() {
@@ -72,7 +67,6 @@ export class StartSequence {
     const t = elapsed - this.startTime;
 
     if (t < TIMING.idle) {
-      this._flyThrough = 0;
       this.drawIdle();
       return;
     }
@@ -80,57 +74,45 @@ export class StartSequence {
     const typingEnd = TIMING.idle + TOTAL_CHARS * TIMING.charInterval;
 
     if (t < typingEnd) {
-      this._flyThrough = 0;
       const chars = Math.floor((t - TIMING.idle) / TIMING.charInterval);
-      this.draw(chars, 0, true);
+      this.draw(chars, 0, 0, true);
       return;
     }
 
     const sendStart = typingEnd + TIMING.sendPause;
 
     if (t < sendStart) {
-      this._flyThrough = 0;
-      this.draw(TOTAL_CHARS, 0, false);
+      this.draw(TOTAL_CHARS, 0, 0, false);
       return;
     }
 
     const sendEnd = sendStart + TIMING.sendDuration;
 
     if (t < sendEnd) {
-      this._flyThrough = 0;
       const sendProgress = (t - sendStart) / TIMING.sendDuration;
-      this.draw(TOTAL_CHARS, sendProgress, false);
+      this.draw(TOTAL_CHARS, sendProgress, 0, false);
       return;
     }
 
-    const flyEnd = sendEnd + TIMING.flyThrough;
+    const fadeEnd = sendEnd + TIMING.fadeDuration;
 
-    if (t < flyEnd) {
-      const ft = (t - sendEnd) / TIMING.flyThrough;
-      this._flyThrough = ft;
-
-      const scale = 1 + ft * 30;
-      const z = -6 + ft * 5.9;
-      this.group.scale.set(scale, scale, scale);
-      this.group.position.z = z;
-
-      const mat = this.mesh.material as THREE.MeshBasicMaterial;
-      mat.opacity = ft < 0.7 ? 1 : 1 - (ft - 0.7) / 0.3;
-      this.texture.needsUpdate = true;
+    if (t < fadeEnd) {
+      const fadeProgress = (t - sendEnd) / TIMING.fadeDuration;
+      this.draw(TOTAL_CHARS, 1, fadeProgress, false);
       return;
     }
 
-    this._flyThrough = 0;
     this._done = true;
   }
 
   private drawIdle(): void {
-    this.draw(0, 0, false);
+    this.draw(0, 0, 0, false);
   }
 
   private draw(
     charsTyped: number,
     sendProgress: number,
+    fadeProgress: number,
     cursorVisible: boolean,
   ): void {
     const ctx = this.ctx;
@@ -145,7 +127,8 @@ export class StartSequence {
     this.drawInputArea(ctx, charsTyped, cursorVisible, sendProgress);
     this.drawSendButton(ctx, charsTyped, sendProgress);
 
-    (this.mesh.material as THREE.MeshBasicMaterial).opacity = 1;
+    (this.mesh.material as THREE.MeshBasicMaterial).opacity =
+      1 - fadeProgress;
     this.texture.needsUpdate = true;
   }
 
