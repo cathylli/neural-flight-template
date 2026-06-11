@@ -144,8 +144,15 @@ export function tick(
   // ── Start Sequence ──
   if (!s.introDone) {
     s.startSequence.update(ctx.elapsed);
+    const ft = s.startSequence.flyThroughProgress;
+    if (ft > 0) {
+      const rushSpeed = 15 + ft * 45;
+      s.player.rig.position.z -= ctx.delta * rushSpeed;
+    }
     if (s.startSequence.done) {
       s.introDone = true;
+      s.startSequence.group.scale.set(1, 1, 1);
+      s.startSequence.group.position.set(0, 0.5, -6);
       s.startSequence.group.removeFromParent();
       s.startSequence.dispose();
     }
