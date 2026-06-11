@@ -58,7 +58,7 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
   const explosionMesh = gridExplosion.getMesh();
   if (explosionMesh) {
     // Ein paar Meter vor dem Spawn, auf Spielerhöhe (Spawn-y = 5).
-    explosionMesh.position.set(0, 30, -100);
+    explosionMesh.position.set(0, 30, -200);
     // Billboarding deaktivieren: Punkte sollen Teil der Welt sein,
     // nicht an der Kamera kleben.
     explosionMesh.frustumCulled = false;
