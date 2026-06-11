@@ -33,12 +33,12 @@ export class GridExplosionLogic {
     // Standardparameter mit den übergebenen Werten zusammenführen
     this.params = Object.assign(
       {
-        gridSize: 12,
-        spacing: 1.5,
-        dotRadius: 0.4,
-        scatterPower: 35,
-        dispersionZ: 15,
-        blobRadius: 1.5,
+        gridSize: 50,
+        spacing: 1.2,
+        dotRadius: 0.1,
+        scatterPower: 80,
+        dispersionZ: 35,
+        blobRadius: 18,
         explodeEase: 2,
         color: 0xffffff,
       },
@@ -92,16 +92,13 @@ export class GridExplosionLogic {
 
         this.targetPositions.push(new THREE.Vector3(posX, posY, 0));
 
-        // Zufällige Startposition innerhalb einer Kugel — bildet den
-        // kompakten "Blob" bevor die Explosion beginnt. Würfelwurzel
-        // sorgt für gleichmäßige Verteilung im Volumen.
-        const r = this.params.blobRadius * Math.cbrt(Math.random());
-        const theta = Math.random() * Math.PI * 2;
-        const phi = Math.acos(2 * Math.random() - 1);
+        // Zufällige Startposition innerhalb eines Würfels — bildet den
+        // kompakten kubischen Block, bevor die Explosion beginnt.
+        const half = this.params.blobRadius;
         const startOffset = new THREE.Vector3(
-          r * Math.sin(phi) * Math.cos(theta),
-          r * Math.sin(phi) * Math.sin(theta),
-          r * Math.cos(phi),
+          (Math.random() - 0.5) * 2 * half,
+          (Math.random() - 0.5) * 2 * half,
+          (Math.random() - 0.5) * 2 * half,
         );
 
         // Einzigartige Triebkräfte für den "Flug" generieren

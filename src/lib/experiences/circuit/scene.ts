@@ -43,10 +43,11 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
   // geordneten Matrix formiert (oder wieder in die Streuung zurückfällt).
   const gridExplosion = new GridExplosionLogic({
     gridSize: 50,
-    spacing: 1.2,
-    dotRadius: 0.1,
-    scatterPower: 40,
-    dispersionZ: 18,
+    spacing: 0.9,
+    dotRadius: 0.2,
+    scatterPower: 80,
+    dispersionZ: 35,
+    blobRadius: 18,
     color: initialColor,
   });
 
@@ -200,8 +201,8 @@ function computeExplosionProgress(s: CircuitState): number {
   const gridCenter = explosionMesh.position;
 
   const distance = playerPos.distanceTo(gridCenter);
-  const activationRadius = 35;
-  const fullRadius = 8;
+  const activationRadius = 60;
+  const fullRadius = 20;
 
   if (distance >= activationRadius) {
     // Spieler ist weit weg → Partikel bleiben gebündelt.
