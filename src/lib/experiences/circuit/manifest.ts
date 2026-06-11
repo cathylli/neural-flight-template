@@ -33,6 +33,18 @@ const parameters: ParameterDef[] = [
 		icon: "Gauge",
 	},
 
+	// ── Audio ──────────────────────────────────────
+	{
+		id: "volume",
+		label: "Volume",
+		group: "Audio",
+		min: 0,
+		max: 1,
+		default: 0.5,
+		step: 0.05,
+		icon: "Volume2",
+	},
+
 	// ── Scene ───────────────────────────────────────
 	{
 		id: "traceDensity",

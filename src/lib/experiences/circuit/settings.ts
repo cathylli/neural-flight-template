@@ -20,6 +20,10 @@ export function applySettings(
 			s.world.applySettings(id, value);
 			break;
 
+		case "volume":
+			s.backgroundAudio.setVolume(value as number);
+			break;
+
 		default:
 			break;
 	}
