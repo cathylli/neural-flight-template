@@ -5,6 +5,7 @@ import { CircuitWorld } from "./world";
 import { manifest } from "./manifest";
 import { GridExplosionLogic } from "./browser.ts";
 import { StartSequence } from "./start-sequence";
+import { DirectionArrows } from "./direction-arrows";
 
 export interface CircuitState extends ExperienceState {
   world: CircuitWorld;
@@ -16,6 +17,8 @@ export interface CircuitState extends ExperienceState {
   explosionPlayed: boolean;
   startSequence: StartSequence;
   introDone: boolean;
+  targetCube: THREE.Mesh;
+  directionArrows: DirectionArrows;
 }
 
 export async function setup(ctx: SetupContext): Promise<CircuitState> {
@@ -81,7 +84,7 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
   try {
     const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
       audioLoader.load(
-        "/experiences/circuit/background.mp3",
+        "/experiences/circuit/Sound/background.mp3",
         resolve,
         undefined,
         reject,
@@ -93,7 +96,7 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
     backgroundAudio.play();
   } catch {
     console.warn(
-      "Background audio not loaded — place static/experiences/circuit/background.mp3",
+      "Background audio not loaded — place static/experiences/circuit/Sound/background.mp3",
     );
   }
 
@@ -104,7 +107,7 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
     const explosionBuffer = await new Promise<AudioBuffer>(
       (resolve, reject) => {
         explosionAudioLoader.load(
-          "/experiences/circuit/explosion.mp3",
+          "/experiences/circuit/Sound/explosion.mp3",
           resolve,
           undefined,
           reject,
@@ -119,7 +122,7 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
     }
   } catch {
     console.warn(
-      "Explosion sound not loaded — place static/experiences/circuit/explosion.mp3",
+      "Explosion sound not loaded — place static/experiences/circuit/Sound/explosion.mp3",
     );
   }
 
@@ -127,6 +130,23 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
   const startSequence = new StartSequence();
   player.camera.add(startSequence.group);
   startSequence.start();
+
+  // ── Target Cube ──
+  // Ein einfacher Würfel als stationäres Zielobjekt, auf das der Pfeil zeigt.
+  const targetCube = new THREE.Mesh(
+    new THREE.BoxGeometry(3, 3, 3),
+    new THREE.MeshBasicMaterial({ color: 0xff3366 }),
+  );
+  targetCube.position.set(30, 8, -20);
+  ctx.scene.add(targetCube);
+
+  // ── Direction Arrow ──
+  // Der Pfeil wird neben dem Spieler positioniert und im tick() jeden Frame
+  // auf den Würfel ausgerichtet. `create()` ist async, weil das glTF-Modell
+  // erst zur Laufzeit geladen werden muss.
+  const directionArrows = await DirectionArrows.create(0xa30505);
+  directionArrows.group.position.set(0, 8, -10);
+  ctx.scene.add(directionArrows.group);
 
   return {
     world,
@@ -139,6 +159,8 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
     explosionPlayed: false,
     startSequence,
     introDone: false,
+    targetCube,
+    directionArrows,
   };
 }
 
@@ -164,6 +186,9 @@ export function tick(
 
   // Übergibt die aktuelle Position des Spielers an das Chunk-Management
   s.world.update(s.player.rig.position, ctx.delta);
+
+  // Pfeil auf den Zielwürfel ausrichten
+  s.directionArrows.pointAt(s.targetCube);
 
   // GridExplosion: Partikel sind gebündelt und fliegen explosionsartig
   // auseinander, sobald sich der Spieler dem Grid nähert.
@@ -197,6 +222,19 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
 
   s.world.dispose();
   scene.remove(s.player.rig);
+
+  // Target Cube entfernen
+  scene.remove(s.targetCube);
+  s.targetCube.geometry.dispose();
+  if (Array.isArray(s.targetCube.material)) {
+    s.targetCube.material.forEach((mat) => mat.dispose());
+  } else {
+    s.targetCube.material.dispose();
+  }
+
+  // Direction Arrow entfernen
+  scene.remove(s.directionArrows.group);
+  s.directionArrows.dispose();
 
   // Cube-Mesh entfernen
   const cubeMesh = s.gridExplosion.getCubeMesh();
