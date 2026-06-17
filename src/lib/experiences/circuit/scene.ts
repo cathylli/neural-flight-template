@@ -137,7 +137,7 @@ export async function setup(ctx: SetupContext): Promise<CircuitState> {
     new THREE.BoxGeometry(3, 3, 3),
     new THREE.MeshBasicMaterial({ color: 0xff3366 }),
   );
-  targetCube.position.set(30, 8, -20);
+  targetCube.position.set(10, 8, -20);
   ctx.scene.add(targetCube);
 
   // ── Direction Arrow ──
