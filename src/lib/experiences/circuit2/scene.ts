@@ -44,13 +44,15 @@ export async function setup(ctx: SetupContext): Promise<CircuitState2> {
   // Motherboard Manager (Infinite WFC Grid)
   const motherboard = new MotherboardManager(ctx.scene, {
     viewRadius: 4, // Balanciert Sichtweite und Performance
+    traceDensity: 0.7,
+    buildingDensity: 0.2,
   });
 
   return {
     motherboard,
     player,
     camera: player.camera,
-    moveSpeed: 5,
+    moveSpeed: 3,
     rotationEnabled: true,
   };
 }

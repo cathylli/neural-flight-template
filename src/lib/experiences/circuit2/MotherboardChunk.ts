@@ -4,6 +4,16 @@ import { WFCCircuitGenerator, getTileById } from "./WFCCircuitGenerator";
 export interface MotherboardMaterials {
   board: THREE.Material;
   trace: THREE.Material;
+  building: THREE.Material;
+}
+
+interface BuildingData {
+  lx: number;
+  lz: number;
+  targetHeight: number;
+  birthTime: number;
+  widthX: number;
+  widthZ: number;
 }
 
 // 8-Wege-Richtungen (N, NE, E, SE, S, SW, W, NW)
@@ -16,15 +26,25 @@ export class MotherboardChunk {
   private readonly tileSize: number;
   private readonly gx: number;
   private readonly gz: number;
+  private readonly traceDensity: number;
+  private readonly buildingDensity: number;
 
-  // Basis-Geometrien exakt auf 1x1x1 skaliert für perfektes Scaling im InstancedMesh
+  // Basis-Geometrien exakt auf 1x1x1 skaliert für perfektes Scaling im InstancedMesh.
+  // Das Building hat den Pivot-Punkt nach unten verschoben, damit Y-Skalierung aus dem Boden wächst.
   private static readonly GEO = {
     segment: new THREE.BoxGeometry(1, 1, 1),
     node: new THREE.CylinderGeometry(1, 1, 1, 8),
+    building: new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0),
   };
 
   private traceMesh: THREE.InstancedMesh | null = null;
   private nodeMesh: THREE.InstancedMesh | null = null;
+  private buildingMesh: THREE.InstancedMesh | null = null;
+
+  // Animation state für Gebäude
+  private buildings: BuildingData[] = [];
+  private buildingsFullyGrown = false;
+  private readonly GROWTH_DURATION = 1.5; // Sekunden bis voll ausgefahren
 
   constructor(
     gx: number,
@@ -32,11 +52,15 @@ export class MotherboardChunk {
     size: number,
     tileSize: number,
     materials: MotherboardMaterials,
+    traceDensity: number = 0.5,
+    buildingDensity: number = 0.4,
   ) {
     this.size = size;
     this.tileSize = tileSize;
     this.gx = gx;
     this.gz = gz;
+    this.traceDensity = traceDensity;
+    this.buildingDensity = buildingDensity;
 
     // Position des Chunks in der Welt
     this.group.position.set(gx * size * tileSize, 0, gz * size * tileSize);
@@ -45,7 +69,7 @@ export class MotherboardChunk {
   }
 
   private build(m: MotherboardMaterials) {
-    const generator = new WFCCircuitGenerator(this.size);
+    const generator = new WFCCircuitGenerator(this.size, this.traceDensity);
     const grid = generator.generate();
 
     // 1. Dunkle Basis-Platte (Cyberpunk-Boden)
@@ -63,11 +87,14 @@ export class MotherboardChunk {
       this.addCentralHub(m);
     }
 
-    // --- In der build() Methode von MotherboardChunk.ts ---
     const segmentMatrices: THREE.Matrix4[] = [];
-    const segmentColors: THREE.Color[] = []; // NEU: Speichert die Farbe pro Segment
+    const segmentColors: THREE.Color[] = [];
     const nodeMatrices: THREE.Matrix4[] = [];
-    const nodeColors: THREE.Color[] = []; // NEU: Speichert die Farbe pro Node
+    const nodeColors: THREE.Color[] = [];
+
+    // Zwischenspeicher für Gebäude, bevor wir die Buffer-Arrays anlegen
+    const tempBuildings: { lx: number; lz: number; targetHeight: number }[] =
+      [];
     const dummy = new THREE.Object3D();
 
     const traceWidth = 0.04;
@@ -82,19 +109,14 @@ export class MotherboardChunk {
     for (let y = 0; y < this.size; y++) {
       for (let x = 0; x < this.size; x++) {
         const tileId = grid[y * this.size + x];
-        if (tileId === -1 || tileId === 0) continue;
-
         const tile = getTileById(tileId);
+
         if (!tile) continue;
 
         const lx = (x - this.size / 2 + 0.5) * this.tileSize;
         const lz = (y - this.size / 2 + 0.5) * this.tileSize;
 
-        // Hash-basierte Farbwahl (wie in deinem alten Code)
-        const isBlue =
-          (Math.sin(lx * 12.9898 + lz * 78.233) * 43758.5453) % 2 > 1;
-        const tileColor = isBlue ? colorBlue : colorGreen;
-
+        // Freihalten der Mitte für den Central Hub in Chunk 0,0
         if (
           this.gx === 0 &&
           this.gz === 0 &&
@@ -104,8 +126,21 @@ export class MotherboardChunk {
           continue;
         }
 
-        let connectionCount = 0;
+        const isBlue =
+          (Math.sin(lx * 12.9898 + lz * 78.233) * 43758.5453) % 2 > 1;
+        const tileColor = isBlue ? colorBlue : colorGreen;
 
+        // 3. WFC Blank Tile Erkennung für Gebäude
+        if (tile.baseName === "Blank") {
+          if (Math.random() < this.buildingDensity) {
+            const targetHeight = 3.0 + Math.random() * 9.0;
+            tempBuildings.push({ lx, lz, targetHeight });
+          }
+          continue; // WFC-Leiterbahnen für diesen Slot überspringen
+        }
+
+        // 4. WFC Leiterbahnen (Traces) berechnen
+        let connectionCount = 0;
         for (let d = 0; d < 8; d++) {
           if (tile.edges[d] === 1) {
             connectionCount++;
@@ -132,11 +167,12 @@ export class MotherboardChunk {
               dummy.updateMatrix();
 
               segmentMatrices.push(dummy.matrix.clone());
-              segmentColors.push(tileColor); // Farbe merken
+              segmentColors.push(tileColor);
             }
           }
         }
 
+        // 5. WFC Lötpunkte (Vias)
         if (tile.hasVia) {
           dummy.position.set(lx, 0.4, lz);
           dummy.rotation.set(0, 0, 0);
@@ -144,40 +180,82 @@ export class MotherboardChunk {
           dummy.updateMatrix();
 
           nodeMatrices.push(dummy.matrix.clone());
-          nodeColors.push(tileColor); // Farbe merken
+          nodeColors.push(tileColor);
         }
       }
     }
 
-    // Instanced Meshes erstellen UND Farben anwenden
+    // --- INSTANCED MESHES ERSTELLEN ---
+
+    // A. Traces (Leiterbahnen)
     if (segmentMatrices.length > 0) {
       this.traceMesh = new THREE.InstancedMesh(
         MotherboardChunk.GEO.segment,
         m.trace,
         segmentMatrices.length,
       );
+      this.traceMesh.frustumCulled = false;
       for (let i = 0; i < segmentMatrices.length; i++) {
         this.traceMesh.setMatrixAt(i, segmentMatrices[i]);
-        this.traceMesh.setColorAt(i, segmentColors[i]); // Farbe setzen!
+        this.traceMesh.setColorAt(i, segmentColors[i]);
       }
       if (this.traceMesh.instanceColor)
         this.traceMesh.instanceColor.needsUpdate = true;
       this.group.add(this.traceMesh);
     }
 
+    // B. Nodes (Lötpunkte)
     if (nodeMatrices.length > 0) {
       this.nodeMesh = new THREE.InstancedMesh(
         MotherboardChunk.GEO.node,
         m.trace,
         nodeMatrices.length,
       );
+      this.nodeMesh.frustumCulled = false;
       for (let i = 0; i < nodeMatrices.length; i++) {
         this.nodeMesh.setMatrixAt(i, nodeMatrices[i]);
-        this.nodeMesh.setColorAt(i, nodeColors[i]); // Farbe setzen!
+        this.nodeMesh.setColorAt(i, nodeColors[i]);
       }
       if (this.nodeMesh.instanceColor)
         this.nodeMesh.instanceColor.needsUpdate = true;
       this.group.add(this.nodeMesh);
+    }
+
+    // C. Buildings (CPU-animiert über instanceMatrix Y-Scale)
+    if (tempBuildings.length > 0) {
+      const currentTime = performance.now() * 0.001;
+
+      this.buildingMesh = new THREE.InstancedMesh(
+        MotherboardChunk.GEO.building,
+        m.building,
+        tempBuildings.length,
+      );
+      this.buildingMesh.frustumCulled = false;
+
+      tempBuildings.forEach((b, i) => {
+        const widthX = this.tileSize * 0.75;
+        const widthZ = this.tileSize * 0.75;
+
+        this.buildings.push({
+          lx: b.lx,
+          lz: b.lz,
+          targetHeight: b.targetHeight,
+          birthTime: currentTime,
+          widthX,
+          widthZ,
+        });
+
+        // Initial: Höhe 0 (aus dem Boden kommend)
+        dummy.position.set(b.lx, 0, b.lz);
+        dummy.scale.set(widthX, 0.001, widthZ); // Fast unsichtbar anfangs
+        dummy.rotation.set(0, 0, 0);
+        dummy.updateMatrix();
+
+        this.buildingMesh!.setMatrixAt(i, dummy.matrix);
+      });
+
+      this.buildingMesh.instanceMatrix.needsUpdate = true;
+      this.group.add(this.buildingMesh);
     }
   }
 
@@ -203,9 +281,61 @@ export class MotherboardChunk {
     this.group.add(grid);
   }
 
+  /**
+   * Aktualisiert die Gebäude-Animation (aus dem Boden fahren).
+   * Wird jeden Frame vom MotherboardManager aufgerufen.
+   */
+  update(timeSec: number): void {
+    if (
+      !this.buildingMesh ||
+      this.buildings.length === 0 ||
+      this.buildingsFullyGrown
+    ) {
+      return;
+    }
+
+    const dummy = new THREE.Object3D();
+    let allDone = true;
+
+    for (let i = 0; i < this.buildings.length; i++) {
+      const b = this.buildings[i];
+      const age = timeSec - b.birthTime;
+      // Ease-out quadratic: schneller Start, sanftes Abbremsen
+      const t = Math.min(age / this.GROWTH_DURATION, 1.0);
+      const eased = 1.0 - (1.0 - t) * (1.0 - t);
+
+      if (t < 1.0) {
+        allDone = false;
+      }
+
+      const currentHeight = eased * b.targetHeight;
+
+      dummy.position.set(b.lx, 0, b.lz);
+      dummy.scale.set(b.widthX, Math.max(0.001, currentHeight), b.widthZ);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+
+      this.buildingMesh.setMatrixAt(i, dummy.matrix);
+    }
+
+    this.buildingMesh.instanceMatrix.needsUpdate = true;
+
+    if (allDone) {
+      this.buildingsFullyGrown = true;
+    }
+  }
+
   dispose() {
-    if (this.traceMesh) this.traceMesh.dispose();
-    if (this.nodeMesh) this.nodeMesh.dispose();
+    if (this.traceMesh) {
+      this.traceMesh.dispose();
+    }
+    if (this.nodeMesh) {
+      this.nodeMesh.dispose();
+    }
+    if (this.buildingMesh) {
+      this.buildingMesh.dispose();
+    }
+    this.buildings = [];
     this.group.clear();
   }
 }
