@@ -12,7 +12,7 @@ export interface CircuitState extends ExperienceState {
   player: FlightPlayer;
   gridExplosion: GridExplosionLogic;
   audioListener: THREE.AudioListener;
-  backgroundAudio: THREE.Audio;
+  backgroundAudio: THREE.Audio<any>;
   explosionSound: THREE.PositionalAudio;
   explosionPlayed: boolean;
   startSequence: StartSequence;

@@ -6,6 +6,7 @@ import { manifest as dataSpaceFlightManifest } from "./cube-cluster"; // Renamed
 import type { ExperienceManifest } from "./types";
 import { manifest as circuit } from "./circuit";
 import { manifest as circuit2 } from "./circuit2";
+import { manifest as circuit3 } from "./circuit3";
 
 // ── Registry ──
 //
@@ -23,6 +24,7 @@ const CATALOG: Record<string, ExperienceManifest> = {
   "data-space-flight": dataSpaceFlightManifest, // Key must match manifest.id
   circuit: circuit,
   circuit2: circuit2,
+  circuit3: circuit3,
 };
 
 export const DEFAULT_EXPERIENCE_ID = "mountain-flight";
