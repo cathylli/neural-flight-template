@@ -1,20 +1,47 @@
 import type { ExperienceState } from "../types";
 import type { WFCState } from "./scene";
 
+/**
+ * Forward orientation + speed inputs to FlightPlayer.
+ * Actual physics run in tick() via player.tick(delta).
+ */
 export function updatePlayer(
   orientation: { pitch: number; roll: number },
-  _speed: { accelerate: boolean; brake: boolean },
+  speed: { accelerate: boolean; brake: boolean },
   state: ExperienceState,
-  delta: number,
+  _delta: number, // unused — FlightPlayer.tick() handles its own delta internally
 ): void {
   const s = state as WFCState;
 
-  const moveZ = -orientation.pitch * s.moveSpeed * delta;
-  const moveX = orientation.roll * s.moveSpeed * delta;
+  // timestamp: 0 — we pass the latest value each frame, so the timestamp
+  // is irrelevant. FlightPlayer uses the value directly without interpolation.
+  s.player.updateOrientation({
+    type: "orientation",
+    pitch: orientation.pitch,
+    roll: orientation.roll,
+    timestamp: 0,
+  });
 
-  s.camera.position.x += moveX;
-  s.camera.position.z += moveZ;
-
-  // Keep fixed height above the data room floor
-  s.camera.position.y = 3;
+  if (speed.accelerate) {
+    s.player.updateSpeed({
+      type: "speed",
+      action: "accelerate",
+      active: true,
+      timestamp: 0,
+    });
+  } else if (speed.brake) {
+    s.player.updateSpeed({
+      type: "speed",
+      action: "brake",
+      active: true,
+      timestamp: 0,
+    });
+  } else {
+    s.player.updateSpeed({
+      type: "speed",
+      action: "accelerate",
+      active: false,
+      timestamp: 0,
+    });
+  }
 }

@@ -22,9 +22,9 @@ const CATALOG: Record<string, ExperienceManifest> = {
   "mountain-flight": mountainFlight,
   "shader-demo": shaderDemo,
   "data-space-flight": dataSpaceFlightManifest, // Key must match manifest.id
-  circuit: circuit,
-  circuit2: circuit2,
-  circuit3: circuit3,
+  "circuit": circuit,
+  "circuit2": circuit2,
+  "circuit3": circuit3,
 };
 
 export const DEFAULT_EXPERIENCE_ID = "mountain-flight";
