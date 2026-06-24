@@ -7,6 +7,8 @@ const CELL = 4; // world units per tile
 export const CHUNK_SIZE = CHUNK_GRID * CELL; // 80 world units per chunk
 const RENDER_RADIUS = 1; // 3×3 = 9 chunks around player
 const GROWTH_DURATION = 1.4; // seconds for buildings to rise
+const TRACE_W  = CELL * 0.025;  // ribbon half-width per trace
+const PAD_R    = CELL * 0.11;   // pad circle radius
 
 // ── WFC Tile System ────────────────────────────────────────────────────────
 
@@ -267,108 +269,134 @@ function runWFC(buildingDensity: number, traceComplexity: number): number[][] {
 
 // ── Trace Geometry ─────────────────────────────────────────────────────────
 
-function buildTracePositions(
-  grid: number[][],
-  neonColor: THREE.Color,
-): { positions: Float32Array; gridPositions: Float32Array } {
-  const tracePos: number[] = [];
-  const gridPos: number[]  = [];
-  const half   = CELL / 2;
-  const halfW  = (CHUNK_GRID * CELL) / 2;
-  const offset = CELL * 0.12;
-  const y      = 0.05;
+function addQuad(
+  arr: number[],
+  ax: number, ay: number, az: number,
+  bx: number, bz: number,
+): void {
+  const dx = bx - ax, dz = bz - az;
+  const len = Math.sqrt(dx * dx + dz * dz);
+  if (len < 1e-6) return;
+  const px = (-dz / len) * TRACE_W;
+  const pz = (dx  / len) * TRACE_W;
+  arr.push(
+    ax + px, ay, az + pz,  ax - px, ay, az - pz,  bx + px, ay, bz + pz,
+    ax - px, ay, az - pz,  bx - px, ay, bz - pz,  bx + px, ay, bz + pz,
+  );
+}
 
-  for (let row = 0; row < CHUNK_GRID; row++) {
-    for (let col = 0; col < CHUNK_GRID; col++) {
+function addDisc(arr: number[], cx: number, cy: number, cz: number): void {
+  const segs = 14;
+  for (let i = 0; i < segs; i++) {
+    const a0 = (i / segs) * Math.PI * 2;
+    const a1 = ((i + 1) / segs) * Math.PI * 2;
+    arr.push(
+      cx, cy, cz,
+      cx + Math.cos(a0) * PAD_R, cy, cz + Math.sin(a0) * PAD_R,
+      cx + Math.cos(a1) * PAD_R, cy, cz + Math.sin(a1) * PAD_R,
+    );
+  }
+}
+
+function buildTraceGeometry(grid: number[][]): {
+  traceVerts:    Float32Array;
+  padVerts:      Float32Array;
+  gridPositions: Float32Array;
+} {
+  const tv: number[] = [];
+  const pv: number[] = [];
+  const gv: number[] = [];
+  const size  = CHUNK_GRID;
+  const half  = CELL / 2;
+  const halfW = (CHUNK_GRID * CELL) / 2;
+  const yT    = 0.04;
+  const yP    = 0.05;
+  // Two parallel ribbons per connection, thin enough that they never overlap
+  const BUNDLE = [-CELL * 0.065, CELL * 0.065];
+
+  const seg = (ax: number, az: number, bx: number, bz: number) => {
+    const dx = bx - ax, dz = bz - az;
+    const len = Math.sqrt(dx * dx + dz * dz);
+    if (len < 1e-6) return;
+    const nx = -dz / len, nz = dx / len;
+    for (const o of BUNDLE) {
+      addQuad(tv, ax + nx * o, yT, az + nz * o, bx + nx * o, bz + nz * o);
+    }
+  };
+
+  const pad = (cx: number, cz: number) => addDisc(pv, cx, yP, cz);
+
+  // Pass 1: trace ribbons
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
       const tileId = grid[row][col];
       const tile   = TILES[tileId];
-      const cx     = col * CELL - halfW + CELL / 2;
-      const cz     = row * CELL - halfW + CELL / 2;
+      if (tile.isBuilding || tileId === EMPTY) continue;
 
-      if (!tile.isBuilding && tileId !== EMPTY) {
-        const push = (ax: number, ay: number, az: number, bx: number, by: number, bz: number) => {
-          tracePos.push(ax, ay, az, bx, by, bz);
-        };
+      const cx = col * CELL - halfW + CELL / 2;
+      const cz = row * CELL - halfW + CELL / 2;
 
-        if (tileId === DIAG_NESW) {
-          // SW → NE diagonal with two offset parallels
-          const d = offset;
-          push(cx - half,     y, cz + half,     cx + half,     y, cz - half    );
-          push(cx - half + d, y, cz + half,     cx + half,     y, cz - half + d);
-          push(cx - half,     y, cz + half - d, cx + half - d, y, cz - half    );
-        } else if (tileId === DIAG_NWSE) {
-          // NW → SE diagonal with two offset parallels
-          const d = offset;
-          push(cx - half,     y, cz - half,     cx + half,     y, cz + half    );
-          push(cx - half + d, y, cz - half,     cx + half,     y, cz + half - d);
-          push(cx - half,     y, cz - half + d, cx + half - d, y, cz + half    );
-        } else if (tileId === CORNER_NE || tileId === CORNER_NW || tileId === CORNER_SE || tileId === CORNER_SW) {
-          // PCB-style: corner = 45° diagonal bundle from one edge midpoint to the other.
-          // sq2 gives the perpendicular offset so bundle width matches straight traces.
-          const sq2 = offset / Math.SQRT2;
-          if (tileId === CORNER_NE) {
-            // N-midpoint → E-midpoint, perpendicular (+1,−1)/√2
-            push(cx,       y, cz - half,       cx + half,       y, cz       );
-            push(cx - sq2, y, cz - half + sq2, cx + half - sq2, y, cz + sq2 );
-            push(cx + sq2, y, cz - half - sq2, cx + half + sq2, y, cz - sq2 );
-          } else if (tileId === CORNER_NW) {
-            // N-midpoint → W-midpoint, perpendicular (+1,+1)/√2
-            push(cx,       y, cz - half,       cx - half,       y, cz       );
-            push(cx + sq2, y, cz - half + sq2, cx - half + sq2, y, cz + sq2 );
-            push(cx - sq2, y, cz - half - sq2, cx - half - sq2, y, cz - sq2 );
-          } else if (tileId === CORNER_SE) {
-            // S-midpoint → E-midpoint, perpendicular (+1,+1)/√2
-            push(cx,       y, cz + half,       cx + half,       y, cz       );
-            push(cx - sq2, y, cz + half - sq2, cx + half - sq2, y, cz - sq2 );
-            push(cx + sq2, y, cz + half + sq2, cx + half + sq2, y, cz + sq2 );
-          } else {
-            // CORNER_SW: S-midpoint → W-midpoint, perpendicular (−1,+1)/√2
-            push(cx,       y, cz + half,       cx - half,       y, cz       );
-            push(cx - sq2, y, cz + half + sq2, cx - half - sq2, y, cz + sq2 );
-            push(cx + sq2, y, cz + half - sq2, cx - half + sq2, y, cz - sq2 );
-          }
-        } else {
-          if (tile.connections.north) push(cx, y, cz,     cx, y, cz - half);
-          if (tile.connections.south) push(cx, y, cz,     cx, y, cz + half);
-          if (tile.connections.east)  push(cx, y, cz, cx + half, y, cz);
-          if (tile.connections.west)  push(cx, y, cz, cx - half, y, cz);
+      switch (tileId) {
+        case DIAG_NESW:
+          seg(cx - half, cz + half, cx + half, cz - half);
+          pad(cx - half, cz + half);
+          pad(cx + half, cz - half);
+          break;
+        case DIAG_NWSE:
+          seg(cx - half, cz - half, cx + half, cz + half);
+          pad(cx - half, cz - half);
+          pad(cx + half, cz + half);
+          break;
+        case CORNER_NE: seg(cx, cz - half, cx + half, cz); break;
+        case CORNER_NW: seg(cx, cz - half, cx - half, cz); break;
+        case CORNER_SE: seg(cx, cz + half, cx + half, cz); break;
+        case CORNER_SW: seg(cx, cz + half, cx - half, cz); break;
+        default:
+          if (tile.connections.north) seg(cx, cz, cx, cz - half);
+          if (tile.connections.south) seg(cx, cz, cx, cz + half);
+          if (tile.connections.east)  seg(cx, cz, cx + half, cz);
+          if (tile.connections.west)  seg(cx, cz, cx - half, cz);
+      }
+    }
+  }
 
-          if (tile.connections.east && tile.connections.west) {
-            push(cx - half, y, cz + offset, cx + half, y, cz + offset);
-            push(cx - half, y, cz - offset, cx + half, y, cz - offset);
-          }
-          if (tile.connections.north && tile.connections.south) {
-            push(cx + offset, y, cz - half, cx + offset, y, cz + half);
-            push(cx - offset, y, cz - half, cx - offset, y, cz + half);
-          }
-          if (tileId >= T_NORTH && tileId <= CROSS) {
-            const d = CELL * 0.06;
-            push(cx - d, y, cz - d, cx + d, y, cz + d);
-            push(cx + d, y, cz - d, cx - d, y, cz + d);
-          }
-        }
-      } else if (tileId === EMPTY && Math.random() < 0.05) {
-        const yg = 0.02;
-        if (Math.random() > 0.5) {
-          tracePos.push(cx - half * 0.3, yg, cz, cx + half * 0.3, yg, cz);
-        } else {
-          tracePos.push(cx, yg, cz - half * 0.3, cx, yg, cz + half * 0.3);
+  // Pass 2: pads only where a trace terminates (neighbor doesn't connect back)
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      const tileId = grid[row][col];
+      const tile   = TILES[tileId];
+      if (tile.isBuilding || tileId === EMPTY || tileId === DIAG_NESW || tileId === DIAG_NWSE) continue;
+
+      const cx = col * CELL - halfW + CELL / 2;
+      const cz = row * CELL - halfW + CELL / 2;
+
+      const endpoints: Array<[boolean, number, number, keyof TileConnections, number, number]> = [
+        [tile.connections.north, row - 1, col,     "south", cx,        cz - half],
+        [tile.connections.south, row + 1, col,     "north", cx,        cz + half],
+        [tile.connections.east,  row,     col + 1, "west",  cx + half, cz       ],
+        [tile.connections.west,  row,     col - 1, "east",  cx - half, cz       ],
+      ];
+
+      for (const [hasConn, nr, nc, theirDir, ex, ez] of endpoints) {
+        if (!hasConn) continue;
+        const inBounds = nr >= 0 && nr < size && nc >= 0 && nc < size;
+        if (!inBounds || !TILES[grid[nr][nc]].connections[theirDir]) {
+          pad(ex, ez);
         }
       }
     }
   }
 
-  // Subtle PCB grid overlay
   const ext = halfW;
   for (let i = -ext; i <= ext; i += CELL) {
-    gridPos.push(-ext, 0.01, i, ext, 0.01, i);
-    gridPos.push(i, 0.01, -ext, i, 0.01, ext);
+    gv.push(-ext, 0.01, i, ext, 0.01, i);
+    gv.push(i, 0.01, -ext, i, 0.01, ext);
   }
 
-  void neonColor; // color applied via material, kept as param for future use
   return {
-    positions:     new Float32Array(tracePos),
-    gridPositions: new Float32Array(gridPos),
+    traceVerts:    new Float32Array(tv),
+    padVerts:      new Float32Array(pv),
+    gridPositions: new Float32Array(gv),
   };
 }
 
@@ -377,7 +405,7 @@ function buildTracePositions(
 export interface ChunkMaterials {
   building:      THREE.MeshStandardMaterial;
   buildingEdge:  THREE.LineBasicMaterial;
-  traceLine:     THREE.LineBasicMaterial;
+  traceMesh:     THREE.MeshBasicMaterial;
   gridLine:      THREE.LineBasicMaterial;
   dispose(): void;
 }
@@ -396,10 +424,12 @@ export function createChunkMaterials(neonColor: THREE.Color): ChunkMaterials {
     transparent: true,
     opacity: 0.9,
   });
-  const traceLine = new THREE.LineBasicMaterial({
+  const traceMesh = new THREE.MeshBasicMaterial({
     color: neonColor,
     transparent: true,
-    opacity: 0.9,
+    opacity: 0.92,
+    side: THREE.DoubleSide,
+    depthWrite: false,
   });
   const gridLine = new THREE.LineBasicMaterial({
     color: neonColor,
@@ -409,12 +439,12 @@ export function createChunkMaterials(neonColor: THREE.Color): ChunkMaterials {
   return {
     building,
     buildingEdge,
-    traceLine,
+    traceMesh,
     gridLine,
     dispose() {
       building.dispose();
       buildingEdge.dispose();
-      traceLine.dispose();
+      traceMesh.dispose();
       gridLine.dispose();
     },
   };
@@ -560,15 +590,19 @@ export class Circuit3Chunk {
       this.group.add(new THREE.LineSegments(edgeGeo, m.buildingEdge));
     }
 
-    // ── Traces: merged static LineSegments ─────────────────────────────
-    const { positions, gridPositions } = buildTracePositions(grid, m.traceLine.color);
+    // ── Traces: flat ribbon meshes + pad discs ─────────────────────────
+    const { traceVerts, padVerts, gridPositions } = buildTraceGeometry(grid);
 
-    if (positions.length > 0) {
+    if (traceVerts.length > 0) {
       const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      this.group.add(new THREE.LineSegments(geo, m.traceLine));
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(traceVerts, 3));
+      this.group.add(new THREE.Mesh(geo, m.traceMesh));
     }
-
+    if (padVerts.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(padVerts, 3));
+      this.group.add(new THREE.Mesh(geo, m.traceMesh));
+    }
     if (gridPositions.length > 0) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.Float32BufferAttribute(gridPositions, 3));
@@ -703,7 +737,7 @@ export class ChunkManager {
 
     if (newSettings.neonColor) {
       const color = new THREE.Color(newSettings.neonColor);
-      this.materials.traceLine.color.copy(color);
+      this.materials.traceMesh.color.copy(color);
       this.materials.gridLine.color.copy(color);
       this.materials.buildingEdge.color.copy(color);
     }
@@ -719,7 +753,7 @@ export class ChunkManager {
   }
 
   updateNeonColor(color: THREE.Color): void {
-    this.materials.traceLine.color.copy(color);
+    this.materials.traceMesh.color.copy(color);
     this.materials.gridLine.color.copy(color);
     this.materials.buildingEdge.color.copy(color);
   }
