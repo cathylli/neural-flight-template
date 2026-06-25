@@ -69,6 +69,9 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     new THREE.MeshStandardMaterial({ color: 0x0D0510, metalness: 0.95, roughness: 0.3 }),
   );
   ground.rotation.x = -Math.PI / 2;
+  // Sit just below the terrain overlay's shallow troughs so the two opaque
+  // dark surfaces don't z-fight where the heightfield dips through y = 0.
+  ground.position.y = -0.6;
   ground.receiveShadow = true;
   ctx.scene.add(ground);
 

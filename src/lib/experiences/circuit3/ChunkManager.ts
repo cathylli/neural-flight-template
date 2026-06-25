@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { StationSpawnPolicy } from "./stations";
+import { buildTerrainMesh, createTerrainMaterial } from "./terrain";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -428,6 +429,7 @@ export interface ChunkMaterials {
   buildingEdge:  THREE.LineBasicMaterial;
   traceMesh:     THREE.MeshBasicMaterial;
   gridLine:      THREE.LineBasicMaterial;
+  terrain:       THREE.MeshStandardMaterial;
   dispose(): void;
 }
 
@@ -457,16 +459,19 @@ export function createChunkMaterials(neonColor: THREE.Color): ChunkMaterials {
     transparent: true,
     opacity: 0.07,
   });
+  const terrain = createTerrainMaterial();
   return {
     building,
     buildingEdge,
     traceMesh,
     gridLine,
+    terrain,
     dispose() {
       building.dispose();
       buildingEdge.dispose();
       traceMesh.dispose();
       gridLine.dispose();
+      terrain.dispose();
     },
   };
 }
@@ -675,6 +680,14 @@ export class Circuit3Chunk {
       geo.setAttribute("position", new THREE.Float32BufferAttribute(gridPositions, 3));
       this.group.add(new THREE.LineSegments(geo, m.gridLine));
     }
+
+    // ── Terrain overlay: continuous heightfield over the board ─────────────
+    // Sampled from this chunk's world origin so the surface stays seamless
+    // across chunk boundaries. Added to the group → shares the chunk's
+    // load/dispose lifecycle automatically.
+    this.group.add(
+      buildTerrainMesh(this.group.position.x, this.group.position.z, CHUNK_SIZE, m.terrain),
+    );
 
     return stationWorldPos;
   }
