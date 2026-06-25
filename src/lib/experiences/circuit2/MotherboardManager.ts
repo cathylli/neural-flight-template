@@ -8,12 +8,18 @@ export interface MotherboardManagerConfig {
   chunkSize?: number;
   tileSize?: number;
   viewRadius?: number;
+  /** Gebäude-Dichte: 0.0 (keine Gebäude) bis 1.0 (jeder freie Platz bebaut) */
+  buildingDensity?: number;
+  /** WFC-Leiterbahn-Dichte: 0.0 (fast nur Blank) bis 1.0 (extrem dichte Bahnen) */
+  traceDensity?: number;
 }
 
 const DEFAULTS: Required<MotherboardManagerConfig> = {
   chunkSize: 20,
   tileSize: 2,
-  viewRadius: 3, // Etwas reduziert für WFC-Performance (9 Chunks total)
+  viewRadius: 3,
+  buildingDensity: 0.4,
+  traceDensity: 0.5,
 };
 
 export class MotherboardManager {
@@ -27,87 +33,123 @@ export class MotherboardManager {
     scene.add(this.group);
 
     this.materials = {
-      // Tiefdunkle Basisplatte (kaum sichtbar, schluckt Licht)
       board: new THREE.MeshStandardMaterial({
         color: 0x190e7d,
         roughness: 0.9,
         metalness: 0.1,
       }),
-      // Cyber-Neon-Leiterbahnen (MeshBasic leuchtet von selbst)
       trace: new THREE.ShaderMaterial({
         uniforms: {
           uTime: { value: 0.0 },
-          // Die dunklere Grundfarbe der Platine (Standby-Leitung)
           uBaseColor: { value: new THREE.Color(0x001a05) },
-          // Die grelle Farbe des Datenpakets
           uPacketColor: { value: new THREE.Color(0x00ff41) },
         },
         vertexShader: `
-                varying float vLocalZ;
-                varying float vRandom;
+          varying float vLocalZ;
+          varying float vRandom;
 
-                // Ein kleiner Pseudo-Zufallsgenerator
-                float random(vec2 st) {
-                    return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
-                }
+          float random(vec2 st) {
+              return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+          }
 
-                void main() {
-                  // DER FIX: Wir nehmen die lokale Z-Koordinate der Geometrie.
-                  // Weil wir die Boxen im Chunk gedreht haben, zeigt Z immer exakt ENTLANG der Leiterbahn!
-                  vLocalZ = position.z;
-
-                  // Wir nutzen die Weltposition des Leitungs-Anfangs als festen Seed,
-                  // damit jede Linie einen einzigartigen Zufallswert bekommt.
-                  vec3 instancePos = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-                  vRandom = random(instancePos.xz);
-
-                  gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0);
-                }
-              `,
+          void main() {
+            vLocalZ = position.z;
+            vec3 instancePos = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+            vRandom = random(instancePos.xz);
+            gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0);
+          }
+        `,
         fragmentShader: `
-                uniform float uTime;
-                uniform vec3 uBaseColor;
-                uniform vec3 uPacketColor;
+          uniform float uTime;
+          uniform vec3 uBaseColor;
+          uniform vec3 uPacketColor;
 
-                varying float vLocalZ;
-                varying float vRandom;
+          varying float vLocalZ;
+          varying float vRandom;
 
-                void main() {
-                  // vLocalZ geht von -0.5 bis 0.5. Wir schieben es auf 0.0 bis 1.0
-                  float z = vLocalZ + 0.5;
+          void main() {
+            float z = vLocalZ + 0.5;
+            float direction = (vRandom > 0.5) ? 1.0 : -1.0;
+            float speed = 0.5 + vRandom * 1.5;
+            float wave = fract(z * direction - uTime * speed + vRandom * 10.0);
+            float packet = smoothstep(0.95, 0.98, wave) * smoothstep(1.0, 0.98, wave);
+            float traffic = step(0.85, vRandom);
+            vec3 finalColor = mix(uBaseColor, uPacketColor, packet * traffic);
+            gl_FragColor = vec4(finalColor, 1.0);
+          }
+        `,
+      }),
 
-                  // Manche Daten fließen vorwärts, manche rückwärts
-                  float direction = (vRandom > 0.5) ? 1.0 : -1.0;
+      // Buildings Material — einfaches Neon-Wireframe ohne Vertex-Manipulation
+      // (Die Wachstums-Animation läuft über CPU-seitige instanceMatrix-Updates)
+      building: new THREE.ShaderMaterial({
+        uniforms: {
+          uNeonColor: { value: new THREE.Color(0x00ff00) },
+          uNeonIntensity: { value: 2.0 },
+        },
+        vertexShader: `
+          varying float vHeight;
 
-                  // Zufällige Geschwindigkeit für jede Leitung (macht es organischer)
-                  float speed = 0.5 + vRandom * 1.5;
+          void main() {
+            vHeight = position.y;
 
-                  // Die Berechnung des fließenden Punktes
-                  // uTime bewegt ihn. vRandom * 10.0 sorgt dafür, dass nicht alle Pakete gleichzeitig starten.
-                  float wave = fract(z * direction - uTime * speed + vRandom * 10.0);
+            mat4 finalMatrix = modelMatrix;
+            #ifdef USE_INSTANCING
+              finalMatrix = modelMatrix * instanceMatrix;
+            #endif
 
-                  // Aus der fließenden Welle formen wir ein kurzes, scharfes Datenpaket (ca. 10% der Länge)
-                  float packet = smoothstep(0.95, 0.98, wave) * smoothstep(1.0, 0.98, wave);
+            gl_Position = projectionMatrix * viewMatrix * finalMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 uNeonColor;
+          uniform float uNeonIntensity;
+          varying float vHeight;
 
-                  // Optional: Nicht auf jeder Leitung ist Verkehr. 30% bleiben einfach dunkel.
-                  float traffic = step(0.85, vRandom);
-
-                  // Mische die dunkle Grundfarbe mit dem grellen Paket
-                  vec3 finalColor = mix(uBaseColor, uPacketColor, packet * traffic);
-
-                  gl_FragColor = vec4(finalColor, 1.0);
-                }
-              `,
+          void main() {
+            // Helligkeit steigt mit Höhe für schönen Glow-Effekt
+            float brightness = 0.4 + 0.6 * clamp(vHeight, 0.0, 1.0);
+            vec3 color = uNeonColor * uNeonIntensity * brightness;
+            gl_FragColor = vec4(color, 1.0);
+          }
+        `,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        wireframe: true,
       }),
     };
   }
 
+  public dispose(): void {
+    // 1. Alle aktiven Chunks zerstören und aus der Szene entfernen
+    for (const chunk of this.active.values()) {
+      this.group.remove(chunk.group);
+      chunk.dispose();
+    }
+    this.active.clear();
+
+    // 2. Die gemeinsam genutzten Materialien aus dem GPU-Speicher löschen
+    this.materials.board.dispose();
+    this.materials.trace.dispose();
+    if (this.materials.building) {
+      this.materials.building.dispose();
+    }
+  }
+
   update(position: THREE.Vector3): void {
+    const timeSec = performance.now() * 0.001;
+
+    // 1. Uniforms für Leiterbahnen aktualisieren
     if (this.materials.trace instanceof THREE.ShaderMaterial) {
-      // performance.now() liefert Millisekunden, wir rechnen es in Sekunden um
-      this.materials.trace.uniforms.uTime.value = performance.now() * 0.001;
+      this.materials.trace.uniforms.uTime.value = timeSec;
       this.materials.trace.uniforms.uBaseColor.value.set(0x002510);
       this.materials.trace.needsUpdate = true;
+    }
+
+    // 2. Gebäude-Animation für alle aktiven Chunks aktualisieren
+    for (const chunk of this.active.values()) {
+      chunk.update(timeSec);
     }
 
     const fullChunkSize = this.config.chunkSize * this.config.tileSize;
@@ -134,6 +176,8 @@ export class MotherboardManager {
             this.config.chunkSize,
             this.config.tileSize,
             this.materials,
+            this.config.traceDensity,
+            this.config.buildingDensity,
           );
           this.group.add(chunk.group);
           this.active.set(key, chunk);
@@ -149,16 +193,5 @@ export class MotherboardManager {
         this.active.delete(key);
       }
     }
-  }
-
-  dispose(): void {
-    for (const chunk of this.active.values()) {
-      this.group.remove(chunk.group);
-      chunk.dispose();
-    }
-    this.active.clear();
-
-    this.materials.board.dispose();
-    this.materials.trace.dispose();
   }
 }

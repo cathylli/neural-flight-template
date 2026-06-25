@@ -92,7 +92,7 @@ export const manifest: ExperienceManifest = {
   camera: { fov: 70, near: 0.1, far: 1000 },
   scene: {
     background: "#050510", // Fast schwarz für Deep-Space/Cyber-Look
-    fogNear: 50,
+    fogNear: 20,
     fogFar: 300,
     fogColor: "#050510",
     ambientIntensity: 0.4,
