@@ -672,11 +672,20 @@ export class ChunkManager {
   private activeChunks       = new Map<string, Circuit3Chunk>();
   private lastPlayerCX       = Infinity;
   private lastPlayerCZ       = Infinity;
+  /** Called once per newly generated chunk. Suppressed during rebuilds. */
+  private onChunkGenerated?: () => void;
+  /** Skip the generation callback while repopulating after a rebuild. */
+  private suppressChunkCount = false;
 
-  constructor(scene: THREE.Scene, settings: ChunkManagerSettings) {
+  constructor(
+    scene: THREE.Scene,
+    settings: ChunkManagerSettings,
+    onChunkGenerated?: () => void,
+  ) {
     this.scene    = scene;
     this.settings = { ...settings };
     this.materials = createChunkMaterials(new THREE.Color(settings.neonColor));
+    this.onChunkGenerated = onChunkGenerated;
   }
 
   update(playerPos: THREE.Vector3, elapsed: number): void {
@@ -727,8 +736,15 @@ export class ChunkManager {
         );
         this.scene.add(chunk.group);
         this.activeChunks.set(key, chunk);
+        // Count genuinely-explored chunks only — repopulation after a
+        // rebuild regenerates the same positions and must not inflate the
+        // level-progression counter.
+        if (!this.suppressChunkCount) this.onChunkGenerated?.();
       }
     }
+
+    // First reconcile after a rebuild is done — resume counting.
+    this.suppressChunkCount = false;
   }
 
   /** Call when settings change — rebuilds all chunks with new parameters */
@@ -749,6 +765,9 @@ export class ChunkManager {
       this.activeChunks.delete(key);
     }
     this.lastPlayerCX = Infinity; // forces reconcileChunks on next update
+    // The forced reconcile re-spawns the same chunk positions — don't let
+    // that repopulation count toward level progression.
+    this.suppressChunkCount = true;
     void elapsed;
   }
 

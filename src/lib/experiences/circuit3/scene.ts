@@ -3,6 +3,7 @@ import type { ExperienceState, SetupContext, TickContext } from "../types";
 import { FlightPlayer } from "$lib/three/player";
 import { CAMERA, FLIGHT } from "$lib/config/flight";
 import { ChunkManager, CHUNK_SIZE } from "./ChunkManager";
+import { LevelState } from "./levelState";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -10,6 +11,7 @@ export interface WFCState extends ExperienceState {
   camera:          THREE.PerspectiveCamera;
   player:          FlightPlayer;
   chunkManager:    ChunkManager;
+  levelState:      LevelState;
   ground:          THREE.Mesh;
   elapsed:         number;
   // Settings exposed for applySettings / manifest
@@ -60,17 +62,23 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   player.minClearance = -1000;
   ctx.scene.add(player.rig);
 
-  // Chunk manager — generates the world procedurally around the player
-  const chunkManager = new ChunkManager(ctx.scene, {
-    buildingDensity,
-    traceComplexity,
-    neonColor: neonColorStr,
-  });
+  // Level progression — tracks chunks flown + stations visited, advances
+  // the world through its three narrative levels.
+  const levelState = new LevelState();
 
-  return {
+  // Chunk manager — generates the world procedurally around the player.
+  // Every newly explored chunk feeds the level-progression counter.
+  const chunkManager = new ChunkManager(
+    ctx.scene,
+    { buildingDensity, traceComplexity, neonColor: neonColorStr },
+    () => levelState.notifyChunkGenerated(),
+  );
+
+  const state: WFCState = {
     player,
     camera:          player.camera,
     chunkManager,
+    levelState,
     ground,
     elapsed:         0,
     moveSpeed:       8,
@@ -81,6 +89,18 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     gridSize:        20,
     cellSize:        4,
   };
+
+  // On a level change, swap in the new level's tile set and rebuild the world.
+  // The rebuild is deferred to the next tick (via _needsRebuild) because this
+  // listener fires synchronously from inside chunkManager.update().
+  levelState.onLevelChange((snap) => {
+    state.buildingDensity = snap.tileSet.buildingDensity;
+    state.traceComplexity = snap.tileSet.traceComplexity;
+    state.neonColor       = snap.tileSet.neonColor;
+    state._needsRebuild   = true;
+  });
+
+  return state;
 }
 
 // ── Lifecycle: tick() ──────────────────────────────────────────────────────
@@ -98,7 +118,11 @@ export function tick(
   if (s._needsRebuild) {
     s._needsRebuild = false;
     s.chunkManager.rebuild(
-      { buildingDensity: s.buildingDensity, traceComplexity: s.traceComplexity },
+      {
+        buildingDensity: s.buildingDensity,
+        traceComplexity: s.traceComplexity,
+        neonColor:       s.neonColor,
+      },
       s.elapsed,
     );
   }
