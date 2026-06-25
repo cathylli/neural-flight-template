@@ -49,7 +49,7 @@ export const LEVEL_TILE_SETS: LevelTileSet[] = [
 /** Minimal amplitude near the origin — level 1 stays almost flat. */
 const TERRAIN_MIN_AMPLITUDE = 0.3;
 /** Maximal amplitude far out — dramatic hills in the server-farm region. */
-const TERRAIN_MAX_AMPLITUDE = 12;
+const TERRAIN_MAX_AMPLITUDE = 120;
 /** Distance (in chunks) over which the amplitude ramps from min → max. */
 const TERRAIN_RAMP_CHUNKS = 40;
 

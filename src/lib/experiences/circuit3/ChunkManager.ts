@@ -429,7 +429,7 @@ export interface ChunkMaterials {
   buildingEdge:  THREE.LineBasicMaterial;
   traceMesh:     THREE.MeshBasicMaterial;
   gridLine:      THREE.LineBasicMaterial;
-  terrain:       THREE.MeshStandardMaterial;
+  terrain:       THREE.MeshBasicMaterial;
   dispose(): void;
 }
 
