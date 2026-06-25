@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { StationSpawnPolicy } from "./stations";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ const BUILDING_TALL = 13;
 const BUILDING_WIDE = 14;
 const DIAG_NESW = 15;  // 45° diagonal trace: SW corner → NE corner
 const DIAG_NWSE = 16;  // 45° diagonal trace: NW corner → SE corner
+const STATION   = 17;  // unique per-level station anchor (single-spawn via flag)
 
 const TILES: TileDef[] = [
   { id: EMPTY,         connections: { north: false, east: false, south: false, west: false }, weight: 40,  isBuilding: false },
@@ -62,6 +64,10 @@ const TILES: TileDef[] = [
   { id: BUILDING_WIDE,  connections: { north: false, east: false, south: false, west: false }, weight: 1,   isBuilding: true },
   { id: DIAG_NESW,      connections: { north: false, east: false, south: false, west: false }, weight: 0.8, isBuilding: false },
   { id: DIAG_NWSE,      connections: { north: false, east: false, south: false, west: false }, weight: 0.8, isBuilding: false },
+  // Station: connectionless (sits like a footprint). Weight is supplied at
+  // runtime — 0 means "removed from the active set" until the level's
+  // station should spawn.
+  { id: STATION,        connections: { north: false, east: false, south: false, west: false }, weight: 0,   isBuilding: false },
 ];
 
 function compatible(
@@ -83,10 +89,12 @@ function weightedCollapse(
   possibilities: Set<number>,
   buildingDensity: number,
   traceComplexity: number,
+  stationWeight: number,
 ): number {
   const options = Array.from(possibilities);
   const weights = options.map((t) => {
     const tile = TILES[t];
+    if (tile.id === STATION) return stationWeight;
     if (tile.isBuilding)   return tile.weight * (buildingDensity * 3);
     if (tile.id === EMPTY) return tile.weight * (1 - traceComplexity + 0.1);
     if (tile.id === DIAG_NESW || tile.id === DIAG_NWSE)
@@ -163,7 +171,8 @@ function removeIsolatedLoops(grid: number[][]): void {
         tid === EMPTY ||
         TILES[tid].isBuilding ||
         tid === DIAG_NESW ||
-        tid === DIAG_NWSE
+        tid === DIAG_NWSE ||
+        tid === STATION
       ) {
         visited[sr][sc] = true;
         continue;
@@ -187,7 +196,7 @@ function removeIsolatedLoops(grid: number[][]): void {
           const nr = r + dr, nc = c + dc;
           if (nr < 0 || nr >= size || nc < 0 || nc >= size || visited[nr][nc]) continue;
           const nt = grid[nr][nc];
-          if (TILES[nt].isBuilding || nt === DIAG_NESW || nt === DIAG_NWSE) continue;
+          if (TILES[nt].isBuilding || nt === DIAG_NESW || nt === DIAG_NWSE || nt === STATION) continue;
           if (myTile.connections[myDir] && TILES[nt].connections[theirDir]) {
             visited[nr][nc] = true;
             queue.push([nr, nc]);
@@ -205,7 +214,11 @@ function removeIsolatedLoops(grid: number[][]): void {
   }
 }
 
-function runWFC(buildingDensity: number, traceComplexity: number): number[][] {
+function runWFC(
+  buildingDensity: number,
+  traceComplexity: number,
+  stationWeight: number,
+): number[][] {
   const size = CHUNK_GRID;
 
   // Build per-cell possibility sets
@@ -215,6 +228,14 @@ function runWFC(buildingDensity: number, traceComplexity: number): number[][] {
   const collapsed: (number | null)[][] = Array.from({ length: size }, () =>
     Array(size).fill(null)
   );
+
+  // Remove the STATION tile from the active set unless this chunk is allowed
+  // to host one — guarantees the unique single-spawn semantics.
+  if (stationWeight <= 0) {
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) cells[r][c].delete(STATION);
+    }
+  }
 
   // Strip edge-facing connections at borders
   for (let i = 0; i < size; i++) {
@@ -253,7 +274,7 @@ function runWFC(buildingDensity: number, traceComplexity: number): number[][] {
     const poss = cells[target.row][target.col];
     const chosen = poss.size === 0
       ? EMPTY
-      : weightedCollapse(poss, buildingDensity, traceComplexity);
+      : weightedCollapse(poss, buildingDensity, traceComplexity, stationWeight);
 
     collapsed[target.row][target.col] = chosen;
     cells[target.row][target.col] = new Set([chosen]);
@@ -331,7 +352,7 @@ function buildTraceGeometry(grid: number[][]): {
     for (let col = 0; col < size; col++) {
       const tileId = grid[row][col];
       const tile   = TILES[tileId];
-      if (tile.isBuilding || tileId === EMPTY) continue;
+      if (tile.isBuilding || tileId === EMPTY || tileId === STATION) continue;
 
       const cx = col * CELL - halfW + CELL / 2;
       const cz = row * CELL - halfW + CELL / 2;
@@ -365,7 +386,7 @@ function buildTraceGeometry(grid: number[][]): {
     for (let col = 0; col < size; col++) {
       const tileId = grid[row][col];
       const tile   = TILES[tileId];
-      if (tile.isBuilding || tileId === EMPTY || tileId === DIAG_NESW || tileId === DIAG_NWSE) continue;
+      if (tile.isBuilding || tileId === EMPTY || tileId === DIAG_NESW || tileId === DIAG_NWSE || tileId === STATION) continue;
 
       const cx = col * CELL - halfW + CELL / 2;
       const cz = row * CELL - halfW + CELL / 2;
@@ -500,6 +521,8 @@ const BUILDING_GEO = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
 
 export class Circuit3Chunk {
   readonly group = new THREE.Group();
+  /** World position of the station this chunk placed, or null if none. */
+  readonly stationWorldPos: THREE.Vector3 | null;
 
   private buildingMesh:  THREE.InstancedMesh | null = null;
   private edgePosArr:    Float32Array | null = null;
@@ -515,9 +538,16 @@ export class Circuit3Chunk {
     buildingDensity: number,
     traceComplexity: number,
     spawnTime: number,
+    stationWeight = 0,
   ) {
     this.group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
-    this.build(materials, buildingDensity, traceComplexity, spawnTime);
+    this.stationWorldPos = this.build(
+      materials,
+      buildingDensity,
+      traceComplexity,
+      spawnTime,
+      stationWeight,
+    );
   }
 
   private build(
@@ -525,9 +555,46 @@ export class Circuit3Chunk {
     buildingDensity: number,
     traceComplexity: number,
     spawnTime: number,
-  ) {
-    const grid  = runWFC(buildingDensity, traceComplexity);
+    stationWeight: number,
+  ): THREE.Vector3 | null {
+    const grid  = runWFC(buildingDensity, traceComplexity, stationWeight);
     const halfW = (CHUNK_GRID * CELL) / 2;
+
+    // ── Station: enforce exactly one per chunk ─────────────────────────────
+    // When this chunk is allowed to host a station, keep a single STATION
+    // cell (force-placing one if the WFC produced none) and clear any extras.
+    let stationWorldPos: THREE.Vector3 | null = null;
+    if (stationWeight > 0) {
+      const stationCells: Array<[number, number]> = [];
+      for (let row = 0; row < CHUNK_GRID; row++) {
+        for (let col = 0; col < CHUNK_GRID; col++) {
+          if (grid[row][col] === STATION) stationCells.push([row, col]);
+        }
+      }
+
+      let chosen = stationCells[0];
+      if (!chosen) {
+        // WFC happened to skip it — force one near the chunk centre.
+        const mid = Math.floor(CHUNK_GRID / 2);
+        grid[mid][mid] = STATION;
+        chosen = [mid, mid];
+      } else {
+        // Drop the extras so the station stays unique within the chunk.
+        for (let i = 1; i < stationCells.length; i++) {
+          const [r, c] = stationCells[i];
+          grid[r][c] = EMPTY;
+        }
+      }
+
+      const [sr, sc] = chosen;
+      const lx = sc * CELL - halfW + CELL / 2;
+      const lz = sr * CELL - halfW + CELL / 2;
+      stationWorldPos = new THREE.Vector3(
+        this.group.position.x + lx,
+        0,
+        this.group.position.z + lz,
+      );
+    }
 
     // Collect building definitions
     const buildingData: { lx: number; lz: number; tileId: number }[] = [];
@@ -608,6 +675,8 @@ export class Circuit3Chunk {
       geo.setAttribute("position", new THREE.Float32BufferAttribute(gridPositions, 3));
       this.group.add(new THREE.LineSegments(geo, m.gridLine));
     }
+
+    return stationWorldPos;
   }
 
   update(elapsed: number): void {
@@ -676,16 +745,20 @@ export class ChunkManager {
   private onChunkGenerated?: () => void;
   /** Skip the generation callback while repopulating after a rebuild. */
   private suppressChunkCount = false;
+  /** Drives unique per-level station spawning. */
+  private stationPolicy?: StationSpawnPolicy;
 
   constructor(
     scene: THREE.Scene,
     settings: ChunkManagerSettings,
     onChunkGenerated?: () => void,
+    stationPolicy?: StationSpawnPolicy,
   ) {
     this.scene    = scene;
     this.settings = { ...settings };
     this.materials = createChunkMaterials(new THREE.Color(settings.neonColor));
     this.onChunkGenerated = onChunkGenerated;
+    this.stationPolicy = stationPolicy;
   }
 
   update(playerPos: THREE.Vector3, elapsed: number): void {
@@ -726,6 +799,7 @@ export class ChunkManager {
     for (const key of desired) {
       if (!this.activeChunks.has(key)) {
         const [cx, cz] = key.split(",").map(Number);
+        const stationWeight = this.stationPolicy?.stationWeightFor(cx, cz) ?? 0;
         const chunk = new Circuit3Chunk(
           cx,
           cz,
@@ -733,9 +807,16 @@ export class ChunkManager {
           this.settings.buildingDensity,
           this.settings.traceComplexity,
           elapsed,
+          stationWeight,
         );
         this.scene.add(chunk.group);
         this.activeChunks.set(key, chunk);
+        // Report a placed station before the next chunk is built, so the
+        // policy can flip its spawn flag and keep the station unique even
+        // across chunks created in the same batch.
+        if (chunk.stationWorldPos) {
+          this.stationPolicy?.reportStationPlaced(chunk.stationWorldPos);
+        }
         // Count genuinely-explored chunks only — repopulation after a
         // rebuild regenerates the same positions and must not inflate the
         // level-progression counter.

@@ -4,6 +4,7 @@ import { FlightPlayer } from "$lib/three/player";
 import { CAMERA, FLIGHT } from "$lib/config/flight";
 import { ChunkManager, CHUNK_SIZE } from "./ChunkManager";
 import { LevelState } from "./levelState";
+import { StationManager, worldToChunk } from "./stations";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -12,6 +13,7 @@ export interface WFCState extends ExperienceState {
   player:          FlightPlayer;
   chunkManager:    ChunkManager;
   levelState:      LevelState;
+  stationManager:  StationManager;
   ground:          THREE.Mesh;
   elapsed:         number;
   // Settings exposed for applySettings / manifest
@@ -66,12 +68,19 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   // the world through its three narrative levels.
   const levelState = new LevelState();
 
+  // Stations — unique per-level anchors with trigger volumes. Entering a
+  // station's trigger marks it visited, which feeds the progression rule.
+  const stationManager = new StationManager(ctx.scene);
+  stationManager.onVisit = (level) => levelState.markStationVisited(level);
+
   // Chunk manager — generates the world procedurally around the player.
-  // Every newly explored chunk feeds the level-progression counter.
+  // Every newly explored chunk feeds the level-progression counter, and the
+  // station manager decides if/where each chunk hosts its level's station.
   const chunkManager = new ChunkManager(
     ctx.scene,
     { buildingDensity, traceComplexity, neonColor: neonColorStr },
     () => levelState.notifyChunkGenerated(),
+    stationManager,
   );
 
   const state: WFCState = {
@@ -79,6 +88,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     camera:          player.camera,
     chunkManager,
     levelState,
+    stationManager,
     ground,
     elapsed:         0,
     moveSpeed:       8,
@@ -98,6 +108,8 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     state.traceComplexity = snap.tileSet.traceComplexity;
     state.neonColor       = snap.tileSet.neonColor;
     state._needsRebuild   = true;
+    // Anchor the next station's spawn-distance gate to where this level began.
+    stationManager.setLevel(snap.currentLevel, worldToChunk(player.rig.position));
   });
 
   return state;
@@ -131,6 +143,9 @@ export function tick(
   const playerPos = s.player.rig.position;
   s.chunkManager.update(playerPos, s.elapsed);
 
+  // Station trigger volumes — fires markStationVisited on entry
+  s.stationManager.update(playerPos);
+
   // Keep the ground centered under the player so it always covers the view
   s.ground.position.x = playerPos.x;
   s.ground.position.z = playerPos.z;
@@ -144,6 +159,7 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   const s = state as WFCState;
 
   s.chunkManager.dispose();
+  s.stationManager.dispose();
 
   s.ground.geometry.dispose();
   if (s.ground.material instanceof THREE.Material) s.ground.material.dispose();
