@@ -13,6 +13,7 @@ export function applySettings(
   switch (id) {
     case "moveSpeed":
       s.moveSpeed = value as number;
+      s.player.baseSpeed = value as number;
       break;
 
     // WFC structural changes → force full chunk regeneration
@@ -39,7 +40,13 @@ export function applySettings(
     // Visual — live update, no full rebuild needed
     case "neonColor": {
       s.neonColor = value as string;
-      s.chunkManager.updateNeonColor(new THREE.Color(value as string));
+      const color = new THREE.Color(value as string);
+      // Snap immediately and cancel any active level cross-fade.
+      s.colorCurrent.copy(color);
+      s.colorFrom.copy(color);
+      s.colorTo.copy(color);
+      s.colorProgress = 1;
+      s.chunkManager.updateNeonColor(color);
       break;
     }
     case "buildingOpacity":

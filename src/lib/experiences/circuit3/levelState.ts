@@ -2,7 +2,7 @@ import {
   LEVEL_THRESHOLDS,
   LEVEL_TILE_SETS,
   type LevelTileSet,
-} from "$lib/config/flight";
+} from "./config";
 
 // ── Level State & Progression ────────────────────────────────────────────
 //

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { LEVEL_TILE_SETS } from "$lib/config/flight";
+import { LEVEL_TILE_SETS } from "./config";
 
 // ── Station Spawning & Triggers ──────────────────────────────────────────
 //
