@@ -4,7 +4,7 @@ import { FlightPlayer } from "$lib/three/player";
 import { CAMERA, FLIGHT } from "$lib/config/flight";
 import { ChunkManager, CHUNK_SIZE } from "./ChunkManager";
 import { LevelState } from "./levelState";
-import { StationManager, worldToChunk } from "./stations";
+import { StationManager } from "./stations";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -108,8 +108,8 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     state.traceComplexity = snap.tileSet.traceComplexity;
     state.neonColor       = snap.tileSet.neonColor;
     state._needsRebuild   = true;
-    // Anchor the next station's spawn-distance gate to where this level began.
-    stationManager.setLevel(snap.currentLevel, worldToChunk(player.rig.position));
+    // The new level's station becomes eligible to spawn.
+    stationManager.setLevel(snap.currentLevel);
   });
 
   return state;

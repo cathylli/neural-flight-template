@@ -743,8 +743,12 @@ export class ChunkManager {
   private lastPlayerCZ       = Infinity;
   /** Called once per newly generated chunk. Suppressed during rebuilds. */
   private onChunkGenerated?: () => void;
-  /** Skip the generation callback while repopulating after a rebuild. */
-  private suppressChunkCount = false;
+  /**
+   * Skip the generation callback while (re)populating chunks that weren't
+   * "flown" to — the initial spawn ring and rebuild repopulation. Starts true
+   * so the chunks present at spawn don't pre-satisfy the level threshold.
+   */
+  private suppressChunkCount = true;
   /** Drives unique per-level station spawning. */
   private stationPolicy?: StationSpawnPolicy;
 
@@ -792,6 +796,8 @@ export class ChunkManager {
         this.scene.remove(chunk.group);
         chunk.dispose();
         this.activeChunks.delete(key);
+        const [cx, cz] = key.split(",").map(Number);
+        this.stationPolicy?.onChunkUnloaded(cx, cz);
       }
     }
 
@@ -799,7 +805,7 @@ export class ChunkManager {
     for (const key of desired) {
       if (!this.activeChunks.has(key)) {
         const [cx, cz] = key.split(",").map(Number);
-        const stationWeight = this.stationPolicy?.stationWeightFor(cx, cz) ?? 0;
+        const stationWeight = this.stationPolicy?.stationWeightFor(cx, cz, pcx, pcz) ?? 0;
         const chunk = new Circuit3Chunk(
           cx,
           cz,
@@ -815,7 +821,7 @@ export class ChunkManager {
         // policy can flip its spawn flag and keep the station unique even
         // across chunks created in the same batch.
         if (chunk.stationWorldPos) {
-          this.stationPolicy?.reportStationPlaced(chunk.stationWorldPos);
+          this.stationPolicy?.reportStationPlaced(chunk.stationWorldPos, cx, cz);
         }
         // Count genuinely-explored chunks only — repopulation after a
         // rebuild regenerates the same positions and must not inflate the
