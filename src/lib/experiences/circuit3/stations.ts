@@ -18,7 +18,8 @@ import { LEVEL_TILE_SETS } from "./config";
 //      never become unreachable.
 //   4. Entering the trigger volume marks the station VISITED (permanent) and
 //      fires markStationVisited (driving the level-progression rule / #1).
-//      A visited station's beacon stays as a landmark and never respawns.
+//      A visited station stays until the player flies off and its chunk
+//      unloads — then it disappears with the chunk and never respawns.
 //
 // Visiting and the chunk-count threshold (levelState / #1) are fully
 // independent — either may be satisfied first.
@@ -77,7 +78,12 @@ export class StationManager implements StationSpawnPolicy {
   private readonly visited: boolean[];
   /** The currently-placed, not-yet-visited station (at most one). */
   private active: ActiveStation | null = null;
-  /** Every live beacon, for disposal (active + visited landmarks). */
+  /**
+   * Stations that have been visited but whose chunk is still loaded. They are
+   * removed once that chunk unloads (the player flew away) and never respawn.
+   */
+  private readonly visitedStations: ActiveStation[] = [];
+  /** Every live beacon, for disposal. */
   private readonly beacons: StationBeacon[] = [];
 
   /** Fired when the player enters a station's trigger volume (once per station). */
@@ -115,14 +121,24 @@ export class StationManager implements StationSpawnPolicy {
   }
 
   /**
-   * The active station's chunk unloaded. If it wasn't visited, despawn it so
-   * it can spawn again ahead of the player — an unvisited station never
-   * becomes unreachable.
+   * A chunk unloaded.
+   *  - If it hosted the active (unvisited) station, despawn it so it can spawn
+   *    again ahead of the player — an unvisited station never becomes
+   *    unreachable.
+   *  - If it hosted an already-visited station, remove it for good (it vanishes
+   *    together with its chunk and won't respawn, since the level stays visited).
    */
   onChunkUnloaded(cx: number, cz: number): void {
     if (this.active && this.active.cx === cx && this.active.cz === cz) {
       this.removeBeacon(this.active.beacon);
       this.active = null;
+    }
+    for (let i = this.visitedStations.length - 1; i >= 0; i--) {
+      const st = this.visitedStations[i];
+      if (st.cx === cx && st.cz === cz) {
+        this.removeBeacon(st.beacon);
+        this.visitedStations.splice(i, 1);
+      }
     }
   }
 
@@ -137,11 +153,12 @@ export class StationManager implements StationSpawnPolicy {
   update(playerPos: THREE.Vector3): void {
     if (!this.active) return;
     if (playerPos.distanceToSquared(this.active.center) <= this.active.radiusSq) {
-      const level = this.active.level;
-      this.visited[level] = true;
-      // Keep the beacon as a visited landmark; just stop tracking it as active.
+      const visited = this.active;
+      this.visited[visited.level] = true;
+      // Keep the beacon around until its chunk unloads, then it disappears.
+      this.visitedStations.push(visited);
       this.active = null;
-      this.onVisit?.(level);
+      this.onVisit?.(visited.level);
     }
   }
 
@@ -240,5 +257,6 @@ export class StationManager implements StationSpawnPolicy {
     // Copy first — removeBeacon mutates the array.
     for (const beacon of [...this.beacons]) this.removeBeacon(beacon);
     this.active = null;
+    this.visitedStations.length = 0;
   }
 }

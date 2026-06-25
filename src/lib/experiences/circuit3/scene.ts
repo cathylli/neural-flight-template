@@ -84,7 +84,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     near:          CAMERA.NEAR,
     far:           CAMERA.FAR,
     spawnPosition: { x: 0, y: 3, z: 0 },
-    // Flightspeed config!!! oder einfach FLIGHT.BASE_SPEED, aber das war zu schnell, also hab ichs auf 10 gesetzt, damit man die Stationen auch mal sehen kann
+    // Flightspeed config -> oder einfach FLIGHT.BASE_SPEED, aber das war zu schnell, also hab ichs auf 10 gesetzt, damit man die Stationen auch mal sehen kann
     baseSpeed:     10,
     terrainSlowdown: FLIGHT.TERRAIN_SLOWDOWN,
   });
