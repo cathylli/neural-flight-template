@@ -9,12 +9,27 @@
 //   1 — router network (terrain starts mixing in)
 //   2 — AI server farm / "brain" (industrial, resource-heavy)
 //
-// A level only advances once BOTH conditions are met for the current level:
-//   (a) chunksGenerated >= LEVEL_THRESHOLDS[currentLevel]   ("enough chunks flown")
+// Each level runs the same scripted sequence (one number per level, below):
+//   1. On entering level N the per-level chunk counter restarts at 0.
+//   2. The player must fly LEVEL_THRESHOLDS[N] *new* chunks before the level's
+//      station is allowed to spawn (same number drives the station spawn delay,
+//      see stations.ts) — so you always cruise a bit before the next station
+//      pops up ahead of you.
+//   3. Once that station has been VISITED, the level advances to N+1 (which
+//      restarts the count for the next level).
+// So a level only advances once BOTH are true for the current level:
+//   (a) chunksThisLevel >= LEVEL_THRESHOLDS[currentLevel]   ("flew far enough")
 //   (b) stationVisited[currentLevel] === true               ("station was visited")
+// Because the station can't even spawn before (a) is met, (b) always happens
+// after (a) — the player flies, the station appears, then they reach it.
 
-/** Chunks that must be generated before each level can advance. Index = current level. */
-export const LEVEL_THRESHOLDS: number[] = [8, 18, 30];
+/**
+ * New chunks the player must fly *within a level* before that level's station
+ * may spawn and the level is allowed to advance. Index = level (NOT cumulative
+ * — the counter restarts on every level change). The same value feeds the
+ * station spawn delay in stations.ts, so station and threshold stay in lock-step.
+ */
+export const LEVEL_THRESHOLDS: number[] = [8, 8, 8];
 
 /** Per-level generation parameters fed to the ChunkManager on a level change. */
 export interface LevelTileSet {

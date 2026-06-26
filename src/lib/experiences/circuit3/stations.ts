@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { LEVEL_TILE_SETS } from "./config";
+import { LEVEL_THRESHOLDS, LEVEL_TILE_SETS } from "./config";
 
 // ── Station Spawning & Triggers ──────────────────────────────────────────
 //
@@ -21,8 +21,10 @@ import { LEVEL_TILE_SETS } from "./config";
 //      A visited station stays until the player flies off and its chunk
 //      unloads — then it disappears with the chunk and never respawns.
 //
-// Visiting and the chunk-count threshold (levelState / #1) are fully
-// independent — either may be satisfied first.
+// The station can only spawn once the level's chunk threshold has been flown
+// (the spawn delay below equals LEVEL_THRESHOLDS[level]), so visiting always
+// happens *after* the chunk threshold is met — the player flies on, the station
+// appears ahead, then they reach it and the level advances.
 
 /**
  * Minimum Chebyshev chunk distance the station keeps from the player's current
@@ -33,13 +35,15 @@ import { LEVEL_TILE_SETS } from "./config";
  */
 const MIN_STATION_CHUNK_DIST = 1;
 /**
- * After a level change, how many genuinely-explored chunks must be generated
- * before the new level's station is allowed to spawn. This lets the player
- * fly on for a bit instead of the next station popping up right after the
- * level switches (and right next to the player during the post-switch
- * rebuild). 0 = spawn as soon as eligible (old behaviour).
+ * How many genuinely-explored chunks must be flown after entering a level before
+ * that level's station is allowed to spawn. This is taken per-level from
+ * LEVEL_THRESHOLDS[level], so it matches the chunk count the level needs to
+ * advance — the player always cruises a bit before the next station pops up
+ * ahead of them (and never right next to them during the post-switch rebuild).
  */
-const STATION_SPAWN_DELAY_CHUNKS = 4;
+function stationSpawnDelayForLevel(level: number): number {
+  return LEVEL_THRESHOLDS[level] ?? 0;
+}
 /** WFC weight of the STATION tile while a level's station is still unspawned. */
 export const STATION_TILE_WEIGHT = 8;
 /** Radius (world units) of the spherical trigger volume around a station. */
@@ -106,6 +110,9 @@ export class StationManager implements StationSpawnPolicy {
   constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.visited = new Array(LEVEL_TILE_SETS.length).fill(false);
+    // Level 0 never goes through setLevel, so seed its spawn delay here — the
+    // very first station should also only appear after the player has flown on.
+    this.spawnDelayRemaining = stationSpawnDelayForLevel(0);
   }
 
   // ── StationSpawnPolicy ────────────────────────────────────────────────────
@@ -162,8 +169,9 @@ export class StationManager implements StationSpawnPolicy {
   /** Switch to a new level — its (unvisited) station becomes eligible to spawn. */
   setLevel(level: number): void {
     this.currentLevel = level;
-    // Hold the new station back until the player has flown on for a few chunks.
-    this.spawnDelayRemaining = STATION_SPAWN_DELAY_CHUNKS;
+    // Hold the new station back until the player has flown this level's chunk
+    // threshold — same number that gates the level advance (LEVEL_THRESHOLDS).
+    this.spawnDelayRemaining = stationSpawnDelayForLevel(level);
   }
 
   /**
