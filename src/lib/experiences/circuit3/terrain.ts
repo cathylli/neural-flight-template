@@ -33,6 +33,16 @@ const TERRAIN_SEGMENTS = 32;
 /** High-frequency micro-relief amplitude (world units) — surface "grain". */
 const MICRO_AMP = 0.12;
 
+// Ground diffuse texture (served from static/). MeshBasicMaterial is unlit, so
+// only the color `map` is usable here — the matching normal/roughness/AO maps
+// would need a lit material (which we intentionally avoid, see header). The
+// texture supplies the soil color; the per-vertex shade + palette only tint it.
+const GROUND_TEXTURE_URL =
+	"/experiences/circuit/Textures/Terrain/ground_0046_color_1k.jpg";
+
+/** World units covered by one full texture tile (controls visual grain size). */
+const TEXTURE_TILE = 24;
+
 // Visibility ramp (world-Y). Below VIS_LOW the terrain is fully transparent
 // (clean grid floor shows); above VIS_HIGH it is fully opaque earth. With the
 // alphaTest cutoff at 0.5 the visible edge sits at the midpoint — a natural
@@ -47,7 +57,13 @@ const C_SOIL = new THREE.Color(0x3a2614); // dark damp soil (low / sheltered)
 const C_CLAY = new THREE.Color(0x6e4a28); // mid clay/earth
 const C_SAND = new THREE.Color(0xb08a4e); // dry sandy ochre (exposed ridges)
 const C_ROCK = new THREE.Color(0x5b5248); // grey-brown rock (steep slopes)
+const C_WHITE = new THREE.Color(0xffffff);
 const _col = new THREE.Color();
+
+// How strongly the earthy palette tints the ground texture. The texture now
+// supplies the base soil color (map ⊗ vertexColor), so the palette is pulled
+// toward white and only mottles the texture rather than darkening it out.
+const TINT_STRENGTH = 0.45;
 
 // Baked "sun": a fixed light direction + ambient floor, folded into the vertex
 // colors so the relief reads without any real scene light.
@@ -81,12 +97,25 @@ function detailNoise(x: number, z: number): number {
  * RGBA — RGB is earth + baked shade, A is the height-based visibility.
  */
 export function createTerrainMaterial(): THREE.MeshBasicMaterial {
-	return new THREE.MeshBasicMaterial({
+	const material = new THREE.MeshBasicMaterial({
 		color: 0xffffff,
 		vertexColors: true,
 		side: THREE.DoubleSide,
 		alphaTest: ALPHA_CUTOFF,
 	});
+
+	// Load the soil diffuse map asynchronously and tile it (UVs are laid out in
+	// world space per chunk — see buildTerrainMesh — so the tiling is seamless
+	// across chunk seams). Assigned when ready; three re-uploads on next render.
+	new THREE.TextureLoader().load(GROUND_TEXTURE_URL, (tex) => {
+		tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+		tex.colorSpace = THREE.SRGBColorSpace;
+		tex.anisotropy = 8;
+		material.map = tex;
+		material.needsUpdate = true;
+	});
+
+	return material;
 }
 
 /**
@@ -111,6 +140,7 @@ export function buildTerrainMesh(
 
 	// ── Displace into the world-space heightfield (+ micro-relief grain) ───
 	const pos = geo.attributes.position as THREE.BufferAttribute;
+	const uv = geo.attributes.uv as THREE.BufferAttribute;
 	for (let i = 0; i < pos.count; i++) {
 		const wx = originX + pos.getX(i);
 		const wz = originZ + pos.getZ(i);
@@ -119,8 +149,11 @@ export function buildTerrainMesh(
 		const amp = getTerrainAmplitude(chunkDistance);
 		const h = terrainNoise(wx, wz) * amp + detailNoise(wx, wz) * MICRO_AMP;
 		pos.setY(i, h);
+		// World-space UVs so the tiled ground map lines up across chunk seams.
+		uv.setXY(i, wx / TEXTURE_TILE, wz / TEXTURE_TILE);
 	}
 	pos.needsUpdate = true;
+	uv.needsUpdate = true;
 	geo.computeVertexNormals();
 
 	// ── Per-vertex RGBA: earthy color + baked shade (RGB), visibility (A) ──
@@ -138,6 +171,9 @@ export function buildTerrainMesh(
 		// Steep faces turn rocky (normal tilts away from straight up).
 		const slope = 1 - Math.min(Math.max(ny, 0), 1);
 		_col.lerp(C_ROCK, Math.min(slope * 1.5, 0.8));
+		// Pull toward white so the texture (map ⊗ color) shows through; the
+		// palette now only mottles the soil rather than replacing it.
+		_col.lerp(C_WHITE, 1 - TINT_STRENGTH);
 
 		// Bake a fixed sun so relief shows without scene lights.
 		const ndl = Math.max(0, nx * LIGHT_DIR.x + ny * LIGHT_DIR.y + nz * LIGHT_DIR.z);
@@ -157,7 +193,7 @@ export function buildTerrainMesh(
 	geo.setAttribute("color", new THREE.BufferAttribute(colors, 4));
 
 	const mesh = new THREE.Mesh(geo, material);
-	// Drop the whole overlay one unit below the board plane.
+	// Terrain Overlay etwas absenken, weil es sonst über dem Grid Boden liegt und in der Luft schwebt
 	mesh.position.y = -0.9;
 	// Chunks are small relative to the view; per-chunk culling is unnecessary
 	// and matches how the WFC building/trace meshes are handled.
