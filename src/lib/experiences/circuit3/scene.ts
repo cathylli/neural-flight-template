@@ -196,8 +196,8 @@ export function tick(
   const playerPos = s.player.rig.position;
   s.chunkManager.update(playerPos, s.elapsed);
 
-  // Station trigger volumes — fires markStationVisited on entry
-  s.stationManager.update(playerPos);
+  // Station trigger volumes + per-frame station animation
+  s.stationManager.update(playerPos, s.elapsed);
 
   // Keep the ground centered under the player so it always covers the view
   s.ground.position.x = playerPos.x;

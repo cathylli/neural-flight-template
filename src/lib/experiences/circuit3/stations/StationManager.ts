@@ -1,5 +1,7 @@
 import * as THREE from "three";
-import { LEVEL_THRESHOLDS, LEVEL_TILE_SETS } from "./config";
+import { LEVEL_THRESHOLDS, LEVEL_TILE_SETS } from "../config";
+import { createStationVisual } from "./registry";
+import type { StationVisual } from "./types";
 
 // ── Station Spawning & Triggers ──────────────────────────────────────────
 //
@@ -10,7 +12,7 @@ import { LEVEL_THRESHOLDS, LEVEL_TILE_SETS } from "./config";
 //      placed, the WFC tile set for newly generated chunks includes the
 //      STATION tile (see ChunkManager).
 //   2. The first eligible chunk that places it reports the world position
-//      here; a beacon + spherical trigger volume is created and that one
+//      here; a visual + spherical trigger volume is created and that one
 //      station becomes "active" (no further chunk can place another).
 //   3. If the player flies off and the active station's chunk unloads before
 //      it is visited, the station despawns and becomes eligible to spawn
@@ -25,6 +27,10 @@ import { LEVEL_THRESHOLDS, LEVEL_TILE_SETS } from "./config";
 // (the spawn delay below equals LEVEL_THRESHOLDS[level]), so visiting always
 // happens *after* the chunk threshold is met — the player flies on, the station
 // appears ahead, then they reach it and the level advances.
+//
+// What a station *looks like* and how it *animates* lives in stations/ — each
+// level's station is a StationVisual built by the registry (see registry.ts).
+// This manager only owns the generic spawn/trigger/level logic.
 
 /**
  * Minimum Chebyshev chunk distance the station keeps from the player's current
@@ -50,10 +56,6 @@ export const STATION_TILE_WEIGHT = 8;
 const TRIGGER_RADIUS = 16;
 /** Height of the visual beacon beam. */
 const BEACON_HEIGHT = 60;
-/** Edge length of the placeholder test cube at each station. */
-const TEST_CUBE_SIZE = 20;
-/** Distinct test colors per station so they're easy to tell apart. */
-const STATION_TEST_COLORS = ["#ff3344", "#33ff88", "#3388ff", "#ffdd33"];
 
 /** Minimal contract the ChunkManager needs to drive station spawning. */
 export interface StationSpawnPolicy {
@@ -68,11 +70,6 @@ export interface StationSpawnPolicy {
   onChunkUnloaded(cx: number, cz: number): void;
 }
 
-interface StationBeacon {
-  group: THREE.Group;
-  materials: THREE.Material[];
-}
-
 /** The single station currently placed in the world (for the active level). */
 interface ActiveStation {
   level: number;
@@ -80,7 +77,7 @@ interface ActiveStation {
   cz: number;
   center: THREE.Vector3;
   radiusSq: number;
-  beacon: StationBeacon;
+  visual: StationVisual;
 }
 
 export class StationManager implements StationSpawnPolicy {
@@ -101,8 +98,8 @@ export class StationManager implements StationSpawnPolicy {
    * removed once that chunk unloads (the player flew away) and never respawn.
    */
   private readonly visitedStations: ActiveStation[] = [];
-  /** Every live beacon, for disposal. */
-  private readonly beacons: StationBeacon[] = [];
+  /** Every live visual, for per-frame animation and disposal. */
+  private readonly visuals: StationVisual[] = [];
 
   /** Fired when the player enters a station's trigger volume (once per station). */
   onVisit?: (level: number) => void;
@@ -138,7 +135,7 @@ export class StationManager implements StationSpawnPolicy {
       cz,
       center: worldPos.clone(),
       radiusSq: TRIGGER_RADIUS * TRIGGER_RADIUS,
-      beacon: this.spawnBeacon(level, worldPos),
+      visual: this.spawnVisual(level, worldPos),
     };
   }
 
@@ -152,13 +149,13 @@ export class StationManager implements StationSpawnPolicy {
    */
   onChunkUnloaded(cx: number, cz: number): void {
     if (this.active && this.active.cx === cx && this.active.cz === cz) {
-      this.removeBeacon(this.active.beacon);
+      this.removeVisual(this.active.visual);
       this.active = null;
     }
     for (let i = this.visitedStations.length - 1; i >= 0; i--) {
       const st = this.visitedStations[i];
       if (st.cx === cx && st.cz === cz) {
-        this.removeBeacon(st.beacon);
+        this.removeVisual(st.visual);
         this.visitedStations.splice(i, 1);
       }
     }
@@ -183,13 +180,18 @@ export class StationManager implements StationSpawnPolicy {
     if (this.spawnDelayRemaining > 0) this.spawnDelayRemaining--;
   }
 
-  /** Proximity check — fires onVisit when the player enters the trigger volume. */
-  update(playerPos: THREE.Vector3): void {
+  /**
+   * Per-frame update: animate every live station and run the proximity check —
+   * firing onVisit when the player enters the active trigger volume.
+   */
+  update(playerPos: THREE.Vector3, elapsed: number): void {
+    for (const visual of this.visuals) visual.update?.(elapsed);
+
     if (!this.active) return;
     if (playerPos.distanceToSquared(this.active.center) <= this.active.radiusSq) {
       const visited = this.active;
       this.visited[visited.level] = true;
-      // Keep the beacon around until its chunk unloads, then it disappears.
+      // Keep the visual around until its chunk unloads, then it disappears.
       this.visitedStations.push(visited);
       this.active = null;
       this.onVisit?.(visited.level);
@@ -198,98 +200,29 @@ export class StationManager implements StationSpawnPolicy {
 
   // ── Visuals ───────────────────────────────────────────────────────────────
 
-  private spawnBeacon(level: number, pos: THREE.Vector3): StationBeacon {
-    const color = new THREE.Color(LEVEL_TILE_SETS[level].neonColor);
-    const group = new THREE.Group();
-    const materials: THREE.Material[] = [];
-
-    // Placeholder test cube — one big colored cube per station so each
-    // station is easy to spot and tell apart while testing.
-    const cubeColor = new THREE.Color(
-      STATION_TEST_COLORS[level % STATION_TEST_COLORS.length],
-    );
-    const cubeMat = new THREE.MeshStandardMaterial({
-      color: cubeColor,
-      emissive: cubeColor,
-      emissiveIntensity: 0.6,
-      metalness: 0.3,
-      roughness: 0.4,
+  private spawnVisual(level: number, pos: THREE.Vector3): StationVisual {
+    const visual = createStationVisual({
+      level,
+      position: pos,
+      neonColor: new THREE.Color(LEVEL_TILE_SETS[level].neonColor),
+      triggerRadius: TRIGGER_RADIUS,
+      beaconHeight: BEACON_HEIGHT,
     });
-    const cube = new THREE.Mesh(
-      new THREE.BoxGeometry(TEST_CUBE_SIZE, TEST_CUBE_SIZE, TEST_CUBE_SIZE),
-      cubeMat,
-    );
-    cube.position.set(pos.x, TEST_CUBE_SIZE / 2, pos.z);
-    group.add(cube);
-    materials.push(cubeMat);
-
-    // Vertical light beam — visible from a distance so the player can fly to it
-    const beamMat = new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.22,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const beam = new THREE.Mesh(
-      new THREE.CylinderGeometry(2.5, 2.5, BEACON_HEIGHT, 20, 1, true),
-      beamMat,
-    );
-    beam.position.set(pos.x, BEACON_HEIGHT / 2, pos.z);
-    group.add(beam);
-    materials.push(beamMat);
-
-    // Bright core pillar
-    const coreMat = new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.9,
-      depthWrite: false,
-    });
-    const core = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.5, 0.5, BEACON_HEIGHT, 12),
-      coreMat,
-    );
-    core.position.set(pos.x, BEACON_HEIGHT / 2, pos.z);
-    group.add(core);
-    materials.push(coreMat);
-
-    // Ground ring marking the trigger footprint
-    const ringMat = new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.5,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(TRIGGER_RADIUS - 1.5, TRIGGER_RADIUS, 48),
-      ringMat,
-    );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(pos.x, 0.1, pos.z);
-    group.add(ring);
-    materials.push(ringMat);
-
-    this.scene.add(group);
-    const beacon: StationBeacon = { group, materials };
-    this.beacons.push(beacon);
-    return beacon;
+    this.scene.add(visual.object);
+    this.visuals.push(visual);
+    return visual;
   }
 
-  private removeBeacon(beacon: StationBeacon): void {
-    beacon.group.traverse((child) => {
-      if (child instanceof THREE.Mesh) child.geometry.dispose();
-    });
-    for (const mat of beacon.materials) mat.dispose();
-    this.scene.remove(beacon.group);
-    const i = this.beacons.indexOf(beacon);
-    if (i !== -1) this.beacons.splice(i, 1);
+  private removeVisual(visual: StationVisual): void {
+    this.scene.remove(visual.object);
+    visual.dispose();
+    const i = this.visuals.indexOf(visual);
+    if (i !== -1) this.visuals.splice(i, 1);
   }
 
   dispose(): void {
-    // Copy first — removeBeacon mutates the array.
-    for (const beacon of [...this.beacons]) this.removeBeacon(beacon);
+    // Copy first — removeVisual mutates the array.
+    for (const visual of [...this.visuals]) this.removeVisual(visual);
     this.active = null;
     this.visitedStations.length = 0;
   }
