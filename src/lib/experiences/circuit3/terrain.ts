@@ -29,11 +29,17 @@ import { getTerrainAmplitude } from "./config";
 // Heights are sampled in *world* space, so adjacent chunks share identical
 // heights (and identical alpha) along their seam → gap-free, no visible cut.
 
-/** Plane subdivisions per chunk side. 32 → smooth hills, ~2k tris/chunk. */
-const TERRAIN_SEGMENTS = 32;
+/** Plane subdivisions per chunk side. 64 → fine enough to resolve the crags. */
+const TERRAIN_SEGMENTS = 64;
 
-/** High-frequency micro-relief amplitude (world units) — surface "grain". */
+/** High-frequency micro-relief amplitude (world units) — fine surface grain. */
 const MICRO_AMP = 0.12;
+/**
+ * How strongly the ridged crag detail modulates the hill height (0 = smooth
+ * dome, higher = rockier/jaggeder). The crags are scaled by the local hill
+ * height, so flat ground stays clean and only the hills turn stony.
+ */
+const ROCK_STRENGTH = 0.55;
 
 // Ground diffuse texture (served from static/). MeshBasicMaterial is unlit, so
 // only the color `map` is usable here — the matching normal/roughness/AO maps
@@ -54,6 +60,12 @@ const VIS_LOW = 0.2;
 const VIS_HIGH = 1.8;
 const ALPHA_CUTOFF = 0.5;
 
+// World-Y the terrain mesh is sunk to so it doesn't float over the grid floor.
+// This *is* the "Platinen-Ebene" reference: wherever the sampled height rises
+// above this offset, earth pokes through the board (and buildings are removed,
+// see terrainRisesAboveBoard / ChunkManager).
+const TERRAIN_Y_OFFSET = -0.9;
+
 // Earthy palette (sRGB hex), blended per vertex for natural soil variation.
 const C_SOIL = new THREE.Color(0x3a2614); // dark damp soil (low / sheltered)
 const C_CLAY = new THREE.Color(0x6e4a28); // mid clay/earth
@@ -73,15 +85,31 @@ const LIGHT_DIR = new THREE.Vector3(0.45, 0.85, 0.3).normalize();
 const BAKED_AMBIENT = 0.5;
 
 /**
- * Continuous pseudo-terrain noise, evaluated in world space. A small stack of
- * directional sine waves (cheap, deterministic, perfectly seamless). The
- * coefficients sum to 1, so the result stays within roughly [-1, 1].
+ * Broad underlying shape — a few low-frequency swells (cheap, deterministic,
+ * seamless). The caller clamps this to its positive part so it reads as separate
+ * big hills rising out of flat ground rather than continuous rolling waves.
+ * Coefficients sum to 1, so the result stays within roughly [-1, 1].
  */
-function terrainNoise(x: number, z: number): number {
+function baseShape(x: number, z: number): number {
 	let n = 0;
 	n += Math.sin(x * 0.045 + z * 0.020) * 0.6;
 	n += Math.sin(x * 0.017 - z * 0.090 + 1.7) * 0.3;
 	n += Math.sin(x * 0.110 + z * 0.130 - 2.1) * Math.cos(z * 0.05) * 0.1;
+	return n;
+}
+
+/**
+ * Ridged crag detail (~[-1, 1], with sharp peaks near +1). Stacked |sine|
+ * ridges at rising frequencies — the jagged, stony surface that rides on top of
+ * the hill. `1 - |sin + sin|` turns the smooth waves into sharp creases, the way
+ * rock faces fold, instead of rounded bumps.
+ */
+function rockDetail(x: number, z: number): number {
+	const ridge = (a: number, b: number) => 1 - Math.abs(Math.sin(a) + Math.sin(b));
+	let n = 0;
+	n += ridge(x * 0.09 + z * 0.05, x * 0.04 - z * 0.11) * 0.5;
+	n += ridge(x * 0.20 - z * 0.16, x * 0.13 + z * 0.18) * 0.3;
+	n += ridge(x * 0.39 + z * 0.31, x * 0.28 - z * 0.34) * 0.2;
 	return n;
 }
 
@@ -91,6 +119,46 @@ function detailNoise(x: number, z: number): number {
 		Math.sin(x * 0.9 - z * 0.5) * 0.5 +
 		Math.sin(x * 0.31 + z * 1.3 + 0.8) * 0.5
 	);
+}
+
+/**
+ * Sample the terrain height (local mesh-Y, before the {@link TERRAIN_Y_OFFSET}
+ * sink) at a world position. This is the single source of truth for the
+ * displacement — {@link buildTerrainMesh} uses it per vertex, and the
+ * building-suppression check ({@link terrainRisesAboveBoard}) uses it per tile,
+ * so the two can never drift apart.
+ */
+export function sampleTerrainHeight(
+	wx: number,
+	wz: number,
+	chunkSize: number,
+	level: number,
+): number {
+	// Amplitude is level-driven; distance (in chunk units) only feeds the final
+	// level, where the terrain keeps building up as the player flies.
+	const chunkDistance = Math.hypot(wx, wz) / chunkSize;
+	const amp = getTerrainAmplitude(level, chunkDistance);
+	const hill = Math.max(baseShape(wx, wz), 0);
+	const crag = rockDetail(wx, wz) * ROCK_STRENGTH;
+	return hill * (1 + crag) * amp + detailNoise(wx, wz) * MICRO_AMP * hill;
+}
+
+/**
+ * True when the terrain rises above the board plane (Platine) at this world
+ * position — i.e. a hill breaks through and earth is visible. Buildings are
+ * suppressed wherever this holds, so the circuit city only fills the flat
+ * ground and the growing hills push it back. `margin` (world units) lifts the
+ * threshold so buildings keep a clearance from the emerging earth instead of
+ * being half-buried right at the contour.
+ */
+export function terrainRisesAboveBoard(
+	wx: number,
+	wz: number,
+	chunkSize: number,
+	level: number,
+	margin = 0,
+): boolean {
+	return sampleTerrainHeight(wx, wz, chunkSize, level) + TERRAIN_Y_OFFSET > margin;
 }
 
 /**
@@ -147,11 +215,10 @@ export function buildTerrainMesh(
 	for (let i = 0; i < pos.count; i++) {
 		const wx = originX + pos.getX(i);
 		const wz = originZ + pos.getZ(i);
-		// Amplitude is level-driven; distance (in chunk units) only feeds the
-		// final level, where the terrain keeps building up as the player flies.
-		const chunkDistance = Math.hypot(wx, wz) / chunkSize;
-		const amp = getTerrainAmplitude(level, chunkDistance);
-		const h = terrainNoise(wx, wz) * amp + detailNoise(wx, wz) * MICRO_AMP;
+		// One big hill clamped to its positive part (flat ground stays at 0, the
+		// clean grid), ridged crags riding on top — see sampleTerrainHeight, the
+		// shared source of truth also used to suppress buildings under hills.
+		const h = sampleTerrainHeight(wx, wz, chunkSize, level);
 		pos.setY(i, h);
 		// World-space UVs so the tiled ground map lines up across chunk seams.
 		uv.setXY(i, wx / TEXTURE_TILE, wz / TEXTURE_TILE);
@@ -170,7 +237,7 @@ export function buildTerrainMesh(
 		const nx = nrm.getX(i), ny = nrm.getY(i), nz = nrm.getZ(i);
 
 		// Broad soil patches from low-frequency world noise (0..1).
-		const patch = (terrainNoise(wx * 0.6 + 1000, wz * 0.6 - 800) + 1) * 0.5;
+		const patch = (baseShape(wx * 0.6 + 1000, wz * 0.6 - 800) + 1) * 0.5;
 		_col.copy(C_SOIL).lerp(C_CLAY, patch).lerp(C_SAND, Math.max(0, patch - 0.5) * 1.2);
 		// Steep faces turn rocky (normal tilts away from straight up).
 		const slope = 1 - Math.min(Math.max(ny, 0), 1);
@@ -198,9 +265,28 @@ export function buildTerrainMesh(
 
 	const mesh = new THREE.Mesh(geo, material);
 	// Terrain Overlay etwas absenken, weil es sonst über dem Grid Boden liegt und in der Luft schwebt
-	mesh.position.y = -0.9;
+	mesh.position.y = TERRAIN_Y_OFFSET;
 	// Chunks are small relative to the view; per-chunk culling is unnecessary
 	// and matches how the WFC building/trace meshes are handled.
 	mesh.frustumCulled = false;
 	return mesh;
+}
+
+/**
+ * Animate a terrain chunk's growth, same idea as the rising buildings. `t` in
+ * [0, 1] scales the hills up from flat (Y-scale) and refreshes the height-based
+ * visibility alpha so the earth rises out of the clean grid floor rather than
+ * popping in fully formed. Call once per frame until grown, then stop.
+ */
+export function setTerrainGrowth(mesh: THREE.Mesh, t: number): void {
+	const s = Math.max(t, 0.0001);
+	mesh.scale.y = s;
+	const geo = mesh.geometry as THREE.BufferGeometry;
+	const pos = geo.attributes.position as THREE.BufferAttribute;
+	const col = geo.attributes.color as THREE.BufferAttribute;
+	// Alpha follows the *current* (scaled) height → the hill fades in as it rises.
+	for (let i = 0; i < pos.count; i++) {
+		col.setW(i, THREE.MathUtils.smoothstep(pos.getY(i) * s, VIS_LOW, VIS_HIGH));
+	}
+	col.needsUpdate = true;
 }

@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import type { StationSpawnPolicy } from "./stations";
-import { buildTerrainMesh, createTerrainMaterial } from "./terrain";
+import {
+  buildTerrainMesh,
+  createTerrainMaterial,
+  setTerrainGrowth,
+  terrainRisesAboveBoard,
+} from "./terrain";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -11,6 +16,10 @@ const RENDER_RADIUS = 1; // 3×3 = 9 chunks around player
 const GROWTH_DURATION = 1.4; // seconds for buildings to rise
 const TRACE_W  = CELL * 0.025;  // ribbon half-width per trace
 const PAD_R    = CELL * 0.11;   // pad circle radius
+// Clearance (world units) a building keeps above the board plane before the
+// rising terrain claims its tile — buildings vanish a touch before the earth
+// reaches them rather than ending up half-buried at the contour.
+const TERRAIN_BUILD_CLEARANCE = 0.4;
 
 // ── WFC Tile System ────────────────────────────────────────────────────────
 
@@ -534,6 +543,9 @@ export class Circuit3Chunk {
   private edgePosAttr:   THREE.BufferAttribute | null = null;
   private buildings:     BuildingAnim[] = [];
   private grown = false;
+  private terrainMesh:   THREE.Mesh | null = null;
+  private terrainGrown = false;
+  private readonly spawnTime: number;
   private readonly dummy = new THREE.Object3D();
 
   constructor(
@@ -546,6 +558,7 @@ export class Circuit3Chunk {
     stationWeight = 0,
     terrainLevel = 0,
   ) {
+    this.spawnTime = spawnTime;
     this.group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
     this.stationWorldPos = this.build(
       materials,
@@ -568,9 +581,26 @@ export class Circuit3Chunk {
     const grid  = runWFC(buildingDensity, traceComplexity, stationWeight);
     const halfW = (CHUNK_GRID * CELL) / 2;
 
+    // True when a hill has risen above the board plane at this tile's world
+    // position — the shared terrain test used to keep both buildings and the
+    // station off the hills.
+    const cellInTerrain = (row: number, col: number): boolean => {
+      const lx = col * CELL - halfW + CELL / 2;
+      const lz = row * CELL - halfW + CELL / 2;
+      return terrainRisesAboveBoard(
+        this.group.position.x + lx,
+        this.group.position.z + lz,
+        CHUNK_SIZE,
+        terrainLevel,
+        TERRAIN_BUILD_CLEARANCE,
+      );
+    };
+
     // ── Station: enforce exactly one per chunk ─────────────────────────────
-    // When this chunk is allowed to host a station, keep a single STATION
-    // cell (force-placing one if the WFC produced none) and clear any extras.
+    // When this chunk is allowed to host a station, keep a single STATION cell
+    // and clear any extras. Unlike buildings the station can't just be dropped
+    // — it's the level anchor the player must reach — so if the WFC put it (or
+    // all of its candidates) under a hill, it's relocated to flat ground.
     let stationWorldPos: THREE.Vector3 | null = null;
     if (stationWeight > 0) {
       const stationCells: Array<[number, number]> = [];
@@ -580,21 +610,30 @@ export class Circuit3Chunk {
         }
       }
 
-      let chosen = stationCells[0];
+      // Prefer a WFC station cell on flat ground; otherwise search outward from
+      // the chunk centre for the nearest flat tile (only a fully buried chunk
+      // falls back to the centre regardless).
+      let chosen = stationCells.find(([r, c]) => !cellInTerrain(r, c));
       if (!chosen) {
-        // WFC happened to skip it — force one near the chunk centre.
         const mid = Math.floor(CHUNK_GRID / 2);
-        grid[mid][mid] = STATION;
         chosen = [mid, mid];
-      } else {
-        // Drop the extras so the station stays unique within the chunk.
-        for (let i = 1; i < stationCells.length; i++) {
-          const [r, c] = stationCells[i];
-          grid[r][c] = EMPTY;
+        outer: for (let radius = 0; radius < CHUNK_GRID; radius++) {
+          for (let dr = -radius; dr <= radius; dr++) {
+            for (let dc = -radius; dc <= radius; dc++) {
+              if (Math.max(Math.abs(dr), Math.abs(dc)) !== radius) continue; // ring edge only
+              const r = mid + dr, c = mid + dc;
+              if (r < 0 || r >= CHUNK_GRID || c < 0 || c >= CHUNK_GRID) continue;
+              if (!cellInTerrain(r, c)) { chosen = [r, c]; break outer; }
+            }
+          }
         }
       }
 
+      // Clear every WFC station cell, then place the single chosen one.
+      for (const [r, c] of stationCells) grid[r][c] = EMPTY;
       const [sr, sc] = chosen;
+      grid[sr][sc] = STATION;
+
       const lx = sc * CELL - halfW + CELL / 2;
       const lz = sr * CELL - halfW + CELL / 2;
       stationWorldPos = new THREE.Vector3(
@@ -604,18 +643,26 @@ export class Circuit3Chunk {
       );
     }
 
-    // Collect building definitions
+    // Collect building definitions. Buildings are suppressed wherever the
+    // terrain has risen above the board plane at the tile's world position —
+    // sampled from the same heightfield the terrain mesh is built from, so the
+    // city only fills the flat ground and the growing hills push it back.
     const buildingData: { lx: number; lz: number; tileId: number }[] = [];
     for (let row = 0; row < CHUNK_GRID; row++) {
       for (let col = 0; col < CHUNK_GRID; col++) {
         const tileId = grid[row][col];
-        if (TILES[tileId].isBuilding) {
-          buildingData.push({
-            lx: col * CELL - halfW + CELL / 2,
-            lz: row * CELL - halfW + CELL / 2,
-            tileId,
-          });
+        if (!TILES[tileId].isBuilding) continue;
+
+        if (cellInTerrain(row, col)) {
+          // Hill claims this tile — drop the building back to empty ground so
+          // traces/pads downstream treat it as empty too.
+          grid[row][col] = EMPTY;
+          continue;
         }
+
+        const lx = col * CELL - halfW + CELL / 2;
+        const lz = row * CELL - halfW + CELL / 2;
+        buildingData.push({ lx, lz, tileId });
       }
     }
 
@@ -688,20 +735,29 @@ export class Circuit3Chunk {
     // Sampled from this chunk's world origin so the surface stays seamless
     // across chunk boundaries. Added to the group → shares the chunk's
     // load/dispose lifecycle automatically.
-    this.group.add(
-      buildTerrainMesh(
-        this.group.position.x,
-        this.group.position.z,
-        CHUNK_SIZE,
-        m.terrain,
-        terrainLevel,
-      ),
+    const terrain = buildTerrainMesh(
+      this.group.position.x,
+      this.group.position.z,
+      CHUNK_SIZE,
+      m.terrain,
+      terrainLevel,
     );
+    setTerrainGrowth(terrain, 0); // start flat; update() grows it in like the buildings
+    this.terrainMesh = terrain;
+    this.group.add(terrain);
 
     return stationWorldPos;
   }
 
   update(elapsed: number): void {
+    // Terrain hills rise from flat to full height, same easing as the buildings.
+    if (this.terrainMesh && !this.terrainGrown) {
+      const t = Math.min((elapsed - this.spawnTime) / GROWTH_DURATION, 1.0);
+      const eased = 1.0 - (1.0 - t) ** 3; // ease-out cubic
+      setTerrainGrowth(this.terrainMesh, eased);
+      if (t >= 1.0) this.terrainGrown = true;
+    }
+
     if (this.grown || this.buildings.length === 0) return;
 
     let allDone = true;
@@ -745,6 +801,8 @@ export class Circuit3Chunk {
     this.edgePosArr  = null;
     this.edgePosAttr = null;
     this.grown = false;
+    this.terrainMesh = null;
+    this.terrainGrown = false;
   }
 }
 
