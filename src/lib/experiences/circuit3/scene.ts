@@ -109,7 +109,11 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   const chunkManager = new ChunkManager(
     ctx.scene,
     { buildingDensity, traceComplexity, neonColor: neonColorStr },
-    () => levelState.notifyChunkGenerated(),
+    () => {
+      levelState.notifyChunkGenerated();
+      // Same signal drives the station's post-level-change spawn delay.
+      stationManager.notifyChunkExplored();
+    },
     stationManager,
   );
 

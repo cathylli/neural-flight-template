@@ -32,6 +32,14 @@ import { LEVEL_TILE_SETS } from "./config";
  * respawn ahead once an unvisited one unloads.
  */
 const MIN_STATION_CHUNK_DIST = 1;
+/**
+ * After a level change, how many genuinely-explored chunks must be generated
+ * before the new level's station is allowed to spawn. This lets the player
+ * fly on for a bit instead of the next station popping up right after the
+ * level switches (and right next to the player during the post-switch
+ * rebuild). 0 = spawn as soon as eligible (old behaviour).
+ */
+const STATION_SPAWN_DELAY_CHUNKS = 4;
 /** WFC weight of the STATION tile while a level's station is still unspawned. */
 export const STATION_TILE_WEIGHT = 8;
 /** Radius (world units) of the spherical trigger volume around a station. */
@@ -79,6 +87,12 @@ export class StationManager implements StationSpawnPolicy {
   /** The currently-placed, not-yet-visited station (at most one). */
   private active: ActiveStation | null = null;
   /**
+   * Chunks still to be explored before the current level's station may spawn.
+   * Set on every level change (see setLevel) and counted down by
+   * notifyChunkExplored. While > 0, stationWeightFor stays at 0.
+   */
+  private spawnDelayRemaining = 0;
+  /**
    * Stations that have been visited but whose chunk is still loaded. They are
    * removed once that chunk unloads (the player flew away) and never respawn.
    */
@@ -101,6 +115,7 @@ export class StationManager implements StationSpawnPolicy {
     if (level < 0 || level >= this.visited.length) return 0;
     if (this.visited[level]) return 0; // already visited — never respawn
     if (this.active) return 0;          // one active station at a time
+    if (this.spawnDelayRemaining > 0) return 0; // fly on a bit after a level change
     const dist = Math.max(Math.abs(cx - pcx), Math.abs(cz - pcz));
     if (dist < MIN_STATION_CHUNK_DIST) return 0;
     return STATION_TILE_WEIGHT;
@@ -147,6 +162,17 @@ export class StationManager implements StationSpawnPolicy {
   /** Switch to a new level — its (unvisited) station becomes eligible to spawn. */
   setLevel(level: number): void {
     this.currentLevel = level;
+    // Hold the new station back until the player has flown on for a few chunks.
+    this.spawnDelayRemaining = STATION_SPAWN_DELAY_CHUNKS;
+  }
+
+  /**
+   * Report that one genuinely-explored chunk was generated (drives the
+   * post-level-change spawn delay). Call this from the same place that feeds
+   * the level-progression counter, so rebuild repopulation doesn't count.
+   */
+  notifyChunkExplored(): void {
+    if (this.spawnDelayRemaining > 0) this.spawnDelayRemaining--;
   }
 
   /** Proximity check — fires onVisit when the player enters the trigger volume. */
