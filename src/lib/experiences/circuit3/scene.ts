@@ -21,11 +21,38 @@ export interface WFCState extends ExperienceState {
   buildingDensity: number;
   traceComplexity: number;
   neonColor:       string;
+  terrainLevel:    number; // current level → drives terrain amplitude
   animateData:     boolean;
+  // Neon color cross-fade (smooth transition between levels)
+  colorCurrent:    THREE.Color; // color currently shown on the materials
+  colorFrom:       THREE.Color; // color at the start of the active transition
+  colorTo:         THREE.Color; // color we're fading toward
+  colorProgress:   number;      // 0 → 1, reaches 1 when the fade is done
   // Legacy fields kept so manifest parameter defaults still compile
   gridSize:        number;
   cellSize:        number;
   _needsRebuild?:  boolean;
+}
+
+/** Duration (seconds) of the neon color cross-fade on a level change. */
+const COLOR_TRANSITION_SECONDS = 2.5;
+
+/** Begin fading the neon color toward `target` from whatever is shown now. */
+function startColorTransition(s: WFCState, target: THREE.Color): void {
+  s.colorFrom.copy(s.colorCurrent);
+  s.colorTo.copy(target);
+  s.colorProgress = 0;
+}
+
+/** Advance the neon color cross-fade and push the result to the materials. */
+function updateColorTransition(s: WFCState, delta: number): void {
+  if (s.colorProgress >= 1) return;
+  s.colorProgress = Math.min(1, s.colorProgress + delta / COLOR_TRANSITION_SECONDS);
+  const t = s.colorProgress;
+  const eased = t * t * (3 - 2 * t); // smoothstep
+  // HSL lerp sweeps through the hue wheel — nicer than a muddy RGB blend.
+  s.colorCurrent.copy(s.colorFrom).lerpHSL(s.colorTo, eased);
+  s.chunkManager.updateNeonColor(s.colorCurrent);
 }
 
 // ── Lifecycle: setup() ─────────────────────────────────────────────────────
@@ -43,6 +70,9 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     new THREE.MeshStandardMaterial({ color: 0x0D0510, metalness: 0.95, roughness: 0.3 }),
   );
   ground.rotation.x = -Math.PI / 2;
+  // Sit just below the terrain overlay's shallow troughs so the two opaque
+  // dark surfaces don't z-fight where the heightfield dips through y = 0.
+  ground.position.y = -0.6;
   ground.receiveShadow = true;
   ctx.scene.add(ground);
 
@@ -58,7 +88,8 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     near:          CAMERA.NEAR,
     far:           CAMERA.FAR,
     spawnPosition: { x: 0, y: 3, z: 0 },
-    baseSpeed:     FLIGHT.BASE_SPEED,
+    // Flightspeed config -> oder einfach FLIGHT.BASE_SPEED, aber das war zu schnell, also hab ichs auf 10 gesetzt, damit man die Stationen auch mal sehen kann
+    baseSpeed:     10,
     terrainSlowdown: FLIGHT.TERRAIN_SLOWDOWN,
   });
   player.minClearance = -1000;
@@ -78,8 +109,17 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   // station manager decides if/where each chunk hosts its level's station.
   const chunkManager = new ChunkManager(
     ctx.scene,
-    { buildingDensity, traceComplexity, neonColor: neonColorStr },
-    () => levelState.notifyChunkGenerated(),
+    {
+      buildingDensity,
+      traceComplexity,
+      neonColor: neonColorStr,
+      terrainLevel: levelState.currentLevel,
+    },
+    () => {
+      levelState.notifyChunkGenerated();
+      // Same signal drives the station's post-level-change spawn delay.
+      stationManager.notifyChunkExplored();
+    },
     stationManager,
   );
 
@@ -95,7 +135,12 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     buildingDensity,
     traceComplexity,
     neonColor:       neonColorStr,
+    terrainLevel:    levelState.currentLevel,
     animateData:     true,
+    colorCurrent:    new THREE.Color(neonColorStr),
+    colorFrom:       new THREE.Color(neonColorStr),
+    colorTo:         new THREE.Color(neonColorStr),
+    colorProgress:   1,
     gridSize:        20,
     cellSize:        4,
   };
@@ -107,7 +152,10 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     state.buildingDensity = snap.tileSet.buildingDensity;
     state.traceComplexity = snap.tileSet.traceComplexity;
     state.neonColor       = snap.tileSet.neonColor;
+    state.terrainLevel    = snap.currentLevel;
     state._needsRebuild   = true;
+    // Cross-fade the neon color over time instead of snapping it.
+    startColorTransition(state, new THREE.Color(snap.tileSet.neonColor));
     // The new level's station becomes eligible to spawn.
     stationManager.setLevel(snap.currentLevel);
   });
@@ -126,18 +174,23 @@ export function tick(
 
   s.player.tick(ctx.delta);
 
-  // Handle rebuild triggered by settings panel
+  // Handle rebuild triggered by settings panel or level change. The neon
+  // color is intentionally omitted — it cross-fades separately (see below)
+  // so a structural rebuild never snaps the color.
   if (s._needsRebuild) {
     s._needsRebuild = false;
     s.chunkManager.rebuild(
       {
         buildingDensity: s.buildingDensity,
         traceComplexity: s.traceComplexity,
-        neonColor:       s.neonColor,
+        terrainLevel:    s.terrainLevel,
       },
       s.elapsed,
     );
   }
+
+  // Smoothly cross-fade the neon color toward the current level's target.
+  updateColorTransition(s, ctx.delta);
 
   // Update chunk visibility / spawn new chunks around the player
   const playerPos = s.player.rig.position;

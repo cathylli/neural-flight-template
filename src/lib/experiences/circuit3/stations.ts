@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { LEVEL_TILE_SETS } from "$lib/config/flight";
+import { LEVEL_THRESHOLDS, LEVEL_TILE_SETS } from "./config";
 
 // ── Station Spawning & Triggers ──────────────────────────────────────────
 //
@@ -18,10 +18,13 @@ import { LEVEL_TILE_SETS } from "$lib/config/flight";
 //      never become unreachable.
 //   4. Entering the trigger volume marks the station VISITED (permanent) and
 //      fires markStationVisited (driving the level-progression rule / #1).
-//      A visited station's beacon stays as a landmark and never respawns.
+//      A visited station stays until the player flies off and its chunk
+//      unloads — then it disappears with the chunk and never respawns.
 //
-// Visiting and the chunk-count threshold (levelState / #1) are fully
-// independent — either may be satisfied first.
+// The station can only spawn once the level's chunk threshold has been flown
+// (the spawn delay below equals LEVEL_THRESHOLDS[level]), so visiting always
+// happens *after* the chunk threshold is met — the player flies on, the station
+// appears ahead, then they reach it and the level advances.
 
 /**
  * Minimum Chebyshev chunk distance the station keeps from the player's current
@@ -31,6 +34,16 @@ import { LEVEL_TILE_SETS } from "$lib/config/flight";
  * respawn ahead once an unvisited one unloads.
  */
 const MIN_STATION_CHUNK_DIST = 1;
+/**
+ * How many genuinely-explored chunks must be flown after entering a level before
+ * that level's station is allowed to spawn. This is taken per-level from
+ * LEVEL_THRESHOLDS[level], so it matches the chunk count the level needs to
+ * advance — the player always cruises a bit before the next station pops up
+ * ahead of them (and never right next to them during the post-switch rebuild).
+ */
+function stationSpawnDelayForLevel(level: number): number {
+  return LEVEL_THRESHOLDS[level] ?? 0;
+}
 /** WFC weight of the STATION tile while a level's station is still unspawned. */
 export const STATION_TILE_WEIGHT = 8;
 /** Radius (world units) of the spherical trigger volume around a station. */
@@ -77,7 +90,18 @@ export class StationManager implements StationSpawnPolicy {
   private readonly visited: boolean[];
   /** The currently-placed, not-yet-visited station (at most one). */
   private active: ActiveStation | null = null;
-  /** Every live beacon, for disposal (active + visited landmarks). */
+  /**
+   * Chunks still to be explored before the current level's station may spawn.
+   * Set on every level change (see setLevel) and counted down by
+   * notifyChunkExplored. While > 0, stationWeightFor stays at 0.
+   */
+  private spawnDelayRemaining = 0;
+  /**
+   * Stations that have been visited but whose chunk is still loaded. They are
+   * removed once that chunk unloads (the player flew away) and never respawn.
+   */
+  private readonly visitedStations: ActiveStation[] = [];
+  /** Every live beacon, for disposal. */
   private readonly beacons: StationBeacon[] = [];
 
   /** Fired when the player enters a station's trigger volume (once per station). */
@@ -86,6 +110,9 @@ export class StationManager implements StationSpawnPolicy {
   constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.visited = new Array(LEVEL_TILE_SETS.length).fill(false);
+    // Level 0 never goes through setLevel, so seed its spawn delay here — the
+    // very first station should also only appear after the player has flown on.
+    this.spawnDelayRemaining = stationSpawnDelayForLevel(0);
   }
 
   // ── StationSpawnPolicy ────────────────────────────────────────────────────
@@ -95,6 +122,7 @@ export class StationManager implements StationSpawnPolicy {
     if (level < 0 || level >= this.visited.length) return 0;
     if (this.visited[level]) return 0; // already visited — never respawn
     if (this.active) return 0;          // one active station at a time
+    if (this.spawnDelayRemaining > 0) return 0; // fly on a bit after a level change
     const dist = Math.max(Math.abs(cx - pcx), Math.abs(cz - pcz));
     if (dist < MIN_STATION_CHUNK_DIST) return 0;
     return STATION_TILE_WEIGHT;
@@ -115,14 +143,24 @@ export class StationManager implements StationSpawnPolicy {
   }
 
   /**
-   * The active station's chunk unloaded. If it wasn't visited, despawn it so
-   * it can spawn again ahead of the player — an unvisited station never
-   * becomes unreachable.
+   * A chunk unloaded.
+   *  - If it hosted the active (unvisited) station, despawn it so it can spawn
+   *    again ahead of the player — an unvisited station never becomes
+   *    unreachable.
+   *  - If it hosted an already-visited station, remove it for good (it vanishes
+   *    together with its chunk and won't respawn, since the level stays visited).
    */
   onChunkUnloaded(cx: number, cz: number): void {
     if (this.active && this.active.cx === cx && this.active.cz === cz) {
       this.removeBeacon(this.active.beacon);
       this.active = null;
+    }
+    for (let i = this.visitedStations.length - 1; i >= 0; i--) {
+      const st = this.visitedStations[i];
+      if (st.cx === cx && st.cz === cz) {
+        this.removeBeacon(st.beacon);
+        this.visitedStations.splice(i, 1);
+      }
     }
   }
 
@@ -131,17 +169,30 @@ export class StationManager implements StationSpawnPolicy {
   /** Switch to a new level — its (unvisited) station becomes eligible to spawn. */
   setLevel(level: number): void {
     this.currentLevel = level;
+    // Hold the new station back until the player has flown this level's chunk
+    // threshold — same number that gates the level advance (LEVEL_THRESHOLDS).
+    this.spawnDelayRemaining = stationSpawnDelayForLevel(level);
+  }
+
+  /**
+   * Report that one genuinely-explored chunk was generated (drives the
+   * post-level-change spawn delay). Call this from the same place that feeds
+   * the level-progression counter, so rebuild repopulation doesn't count.
+   */
+  notifyChunkExplored(): void {
+    if (this.spawnDelayRemaining > 0) this.spawnDelayRemaining--;
   }
 
   /** Proximity check — fires onVisit when the player enters the trigger volume. */
   update(playerPos: THREE.Vector3): void {
     if (!this.active) return;
     if (playerPos.distanceToSquared(this.active.center) <= this.active.radiusSq) {
-      const level = this.active.level;
-      this.visited[level] = true;
-      // Keep the beacon as a visited landmark; just stop tracking it as active.
+      const visited = this.active;
+      this.visited[visited.level] = true;
+      // Keep the beacon around until its chunk unloads, then it disappears.
+      this.visitedStations.push(visited);
       this.active = null;
-      this.onVisit?.(level);
+      this.onVisit?.(visited.level);
     }
   }
 
@@ -240,5 +291,6 @@ export class StationManager implements StationSpawnPolicy {
     // Copy first — removeBeacon mutates the array.
     for (const beacon of [...this.beacons]) this.removeBeacon(beacon);
     this.active = null;
+    this.visitedStations.length = 0;
   }
 }

@@ -2,7 +2,7 @@ import {
   LEVEL_THRESHOLDS,
   LEVEL_TILE_SETS,
   type LevelTileSet,
-} from "$lib/config/flight";
+} from "./config";
 
 // ── Level State & Progression ────────────────────────────────────────────
 //
@@ -10,9 +10,11 @@ import {
 // It tracks how far the journey has come and decides when a level advances.
 //
 // Advance rule (checked whenever either input changes):
-//   level N → N+1  iff  chunksGenerated >= LEVEL_THRESHOLDS[N]
+//   level N → N+1  iff  chunksThisLevel >= LEVEL_THRESHOLDS[N]
 //                  AND  stationVisited[N] === true
 //
+// chunksThisLevel counts *new* chunks flown since the current level started and
+// restarts at 0 on every advance (LEVEL_THRESHOLDS is per-level, not cumulative).
 // The chunk counter is driven by ChunkManager (one tick per newly generated
 // chunk); station visits are reported by station-proximity logic elsewhere.
 
@@ -33,6 +35,8 @@ export type LevelChangeListener = (snapshot: LevelSnapshot) => void;
 export class LevelState {
   private _currentLevel = 0;
   private _chunksGenerated = 0;
+  /** New chunks flown since the current level started; restarts on advance. */
+  private _chunksThisLevel = 0;
   private readonly _stationVisited: boolean[];
   private readonly maxLevel: number;
   private readonly listeners = new Set<LevelChangeListener>();
@@ -72,6 +76,7 @@ export class LevelState {
   notifyChunkGenerated(count = 1): void {
     if (count <= 0) return;
     this._chunksGenerated += count;
+    this._chunksThisLevel += count;
     this.tryAdvance();
   }
 
@@ -110,6 +115,7 @@ export class LevelState {
   reset(): void {
     this._currentLevel = 0;
     this._chunksGenerated = 0;
+    this._chunksThisLevel = 0;
     this._stationVisited.fill(false);
   }
 
@@ -122,10 +128,11 @@ export class LevelState {
     while (!this.isFinalLevel) {
       const threshold = LEVEL_THRESHOLDS[this._currentLevel] ?? Number.POSITIVE_INFINITY;
       const ready =
-        this._chunksGenerated >= threshold &&
+        this._chunksThisLevel >= threshold &&
         this._stationVisited[this._currentLevel] === true;
       if (!ready) break;
       this._currentLevel++;
+      this._chunksThisLevel = 0; // restart the per-level count for the new level
       advanced = true;
     }
     if (advanced) this.emit();
