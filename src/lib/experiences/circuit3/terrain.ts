@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import { getTerrainAmplitude } from "./config";
 
+//TODO: Terrain material ist hässlich und liegt ÜBER dem Grid Boden. !!! MUSS NOCH GEÄNDERT WERDEN !!!
+//ToDo: Terrain sollte sich levelbasiert erhöhen, nicht ausschließlich mit der Distanz. Die Distanz kann beim letzten Level berücksichtigt werden, nicht aber beim ersten Level. Das Terrain sollte sich erst ab dem zweiten Level erhöhen.
+
 // ── Terrain Overlay Mesh (#3a) ───────────────────────────────────────────────
 //
 // A separate heightfield mesh, one per WFC chunk and the same footprint, that
@@ -154,6 +157,8 @@ export function buildTerrainMesh(
 	geo.setAttribute("color", new THREE.BufferAttribute(colors, 4));
 
 	const mesh = new THREE.Mesh(geo, material);
+	// Drop the whole overlay one unit below the board plane.
+	mesh.position.y = -0.9;
 	// Chunks are small relative to the view; per-chunk culling is unnecessary
 	// and matches how the WFC building/trace meshes are handled.
 	mesh.frustumCulled = false;
