@@ -544,6 +544,7 @@ export class Circuit3Chunk {
     traceComplexity: number,
     spawnTime: number,
     stationWeight = 0,
+    terrainLevel = 0,
   ) {
     this.group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
     this.stationWorldPos = this.build(
@@ -552,6 +553,7 @@ export class Circuit3Chunk {
       traceComplexity,
       spawnTime,
       stationWeight,
+      terrainLevel,
     );
   }
 
@@ -561,6 +563,7 @@ export class Circuit3Chunk {
     traceComplexity: number,
     spawnTime: number,
     stationWeight: number,
+    terrainLevel: number,
   ): THREE.Vector3 | null {
     const grid  = runWFC(buildingDensity, traceComplexity, stationWeight);
     const halfW = (CHUNK_GRID * CELL) / 2;
@@ -686,7 +689,13 @@ export class Circuit3Chunk {
     // across chunk boundaries. Added to the group → shares the chunk's
     // load/dispose lifecycle automatically.
     this.group.add(
-      buildTerrainMesh(this.group.position.x, this.group.position.z, CHUNK_SIZE, m.terrain),
+      buildTerrainMesh(
+        this.group.position.x,
+        this.group.position.z,
+        CHUNK_SIZE,
+        m.terrain,
+        terrainLevel,
+      ),
     );
 
     return stationWorldPos;
@@ -745,6 +754,8 @@ export interface ChunkManagerSettings {
   buildingDensity: number;
   traceComplexity: number;
   neonColor: string;
+  /** Current level — drives the level-based terrain amplitude (see terrain.ts). */
+  terrainLevel: number;
 }
 
 export class ChunkManager {
@@ -827,6 +838,7 @@ export class ChunkManager {
           this.settings.traceComplexity,
           elapsed,
           stationWeight,
+          this.settings.terrainLevel,
         );
         this.scene.add(chunk.group);
         this.activeChunks.set(key, chunk);

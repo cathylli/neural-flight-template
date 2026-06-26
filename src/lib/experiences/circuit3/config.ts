@@ -42,27 +42,40 @@ export const LEVEL_TILE_SETS: LevelTileSet[] = [
 // board, valleys dip just below it and let the neon traces shimmer through.
 // The board / WFC generation is untouched — this is a purely additive layer.
 //
-// The amplitude grows with how far the player has flown from the origin, so the
-// world drifts from clean & flat (level ~1, minimal terrain) toward an
-// increasingly industrial, resource-heavy landscape deeper into the journey.
-
-/** Minimal amplitude near the origin — level 1 stays almost flat. */
-const TERRAIN_MIN_AMPLITUDE = 0.3;
-/** Maximal amplitude far out — dramatic hills in the server-farm region. */
-const TERRAIN_MAX_AMPLITUDE = 120;
-/** Distance (in chunks) over which the amplitude ramps from min → max. */
-const TERRAIN_RAMP_CHUNKS = 40;
+// The amplitude grows with the current level, not with how far the player has
+// flown: the world stays clean & flat in level 0 (the abstract data room) and
+// steps up a notch on each level change, drifting toward an increasingly
+// industrial, resource-heavy landscape. Distance is only folded in on the final
+// level, where the terrain is allowed to keep growing as the player flies on.
 
 /**
- * Heightfield amplitude (world units) at a given distance from the origin,
- * measured in chunks (a continuous value, not an integer index, so the result
- * stays continuous across chunk boundaries — no seams).
- *
- * Ease-in (t²) keeps the early levels clean and lets the terrain take over
- * later in the flight.
+ * Base heightfield amplitude (world units) per level. Index = level.
+ *   L0 → 0   : flat, nothing breaks through the visibility ramp → clean grid.
+ *   L1, L2…  : each level a notch higher.
+ * Add/extend entries if more levels are introduced (see LEVEL_TILE_SETS).
  */
-export function getTerrainAmplitude(chunkDistance: number): number {
-	const t = Math.min(Math.max(chunkDistance, 0) / TERRAIN_RAMP_CHUNKS, 1);
-	const eased = t * t;
-	return TERRAIN_MIN_AMPLITUDE + (TERRAIN_MAX_AMPLITUDE - TERRAIN_MIN_AMPLITUDE) * eased;
+const TERRAIN_LEVEL_AMPLITUDE: number[] = [0, 10, 25];
+
+/** On the final level only, extra amplitude added per chunk of distance flown. */
+const TERRAIN_FINAL_DISTANCE_GAIN = 2.5;
+/** Cap on that final-level distance contribution (world units). */
+const TERRAIN_FINAL_DISTANCE_MAX = 50;
+
+/**
+ * Heightfield amplitude (world units) for the given level. `chunkDistance`
+ * (distance from the origin in chunks, continuous so the surface stays seamless
+ * across chunk boundaries) only matters on the final level, where the terrain
+ * keeps building up the further the player flies.
+ */
+export function getTerrainAmplitude(level: number, chunkDistance: number): number {
+	const last = TERRAIN_LEVEL_AMPLITUDE.length - 1;
+	const lvl = Math.min(Math.max(level, 0), last);
+	let amp = TERRAIN_LEVEL_AMPLITUDE[lvl];
+	if (lvl === last) {
+		amp += Math.min(
+			Math.max(chunkDistance, 0) * TERRAIN_FINAL_DISTANCE_GAIN,
+			TERRAIN_FINAL_DISTANCE_MAX,
+		);
+	}
+	return amp;
 }

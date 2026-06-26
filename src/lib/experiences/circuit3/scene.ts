@@ -21,6 +21,7 @@ export interface WFCState extends ExperienceState {
   buildingDensity: number;
   traceComplexity: number;
   neonColor:       string;
+  terrainLevel:    number; // current level → drives terrain amplitude
   animateData:     boolean;
   // Neon color cross-fade (smooth transition between levels)
   colorCurrent:    THREE.Color; // color currently shown on the materials
@@ -108,7 +109,12 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   // station manager decides if/where each chunk hosts its level's station.
   const chunkManager = new ChunkManager(
     ctx.scene,
-    { buildingDensity, traceComplexity, neonColor: neonColorStr },
+    {
+      buildingDensity,
+      traceComplexity,
+      neonColor: neonColorStr,
+      terrainLevel: levelState.currentLevel,
+    },
     () => {
       levelState.notifyChunkGenerated();
       // Same signal drives the station's post-level-change spawn delay.
@@ -129,6 +135,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     buildingDensity,
     traceComplexity,
     neonColor:       neonColorStr,
+    terrainLevel:    levelState.currentLevel,
     animateData:     true,
     colorCurrent:    new THREE.Color(neonColorStr),
     colorFrom:       new THREE.Color(neonColorStr),
@@ -145,6 +152,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     state.buildingDensity = snap.tileSet.buildingDensity;
     state.traceComplexity = snap.tileSet.traceComplexity;
     state.neonColor       = snap.tileSet.neonColor;
+    state.terrainLevel    = snap.currentLevel;
     state._needsRebuild   = true;
     // Cross-fade the neon color over time instead of snapping it.
     startColorTransition(state, new THREE.Color(snap.tileSet.neonColor));
@@ -175,6 +183,7 @@ export function tick(
       {
         buildingDensity: s.buildingDensity,
         traceComplexity: s.traceComplexity,
+        terrainLevel:    s.terrainLevel,
       },
       s.elapsed,
     );

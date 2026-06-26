@@ -2,7 +2,9 @@ import * as THREE from "three";
 import { getTerrainAmplitude } from "./config";
 
 //TODO: Terrain material ist hässlich und liegt ÜBER dem Grid Boden. !!! MUSS NOCH GEÄNDERT WERDEN !!!
-//ToDo: Terrain sollte sich levelbasiert erhöhen, nicht ausschließlich mit der Distanz. Die Distanz kann beim letzten Level berücksichtigt werden, nicht aber beim ersten Level. Das Terrain sollte sich erst ab dem zweiten Level erhöhen.
+// Terrain erhöht sich jetzt levelbasiert (getTerrainAmplitude(level, …)): Level 0
+// bleibt flach, jeder Levelwechsel hebt es eine Stufe an, und nur im letzten
+// Level fließt zusätzlich die Distanz ein. Siehe config.ts.
 
 // ── Terrain Overlay Mesh (#3a) ───────────────────────────────────────────────
 //
@@ -128,6 +130,7 @@ export function buildTerrainMesh(
 	originZ: number,
 	chunkSize: number,
 	material: THREE.Material,
+	level: number,
 ): THREE.Mesh {
 	const geo = new THREE.PlaneGeometry(
 		chunkSize,
@@ -144,9 +147,10 @@ export function buildTerrainMesh(
 	for (let i = 0; i < pos.count; i++) {
 		const wx = originX + pos.getX(i);
 		const wz = originZ + pos.getZ(i);
-		// Distance from origin in chunk units (continuous) → continuous amplitude.
+		// Amplitude is level-driven; distance (in chunk units) only feeds the
+		// final level, where the terrain keeps building up as the player flies.
 		const chunkDistance = Math.hypot(wx, wz) / chunkSize;
-		const amp = getTerrainAmplitude(chunkDistance);
+		const amp = getTerrainAmplitude(level, chunkDistance);
 		const h = terrainNoise(wx, wz) * amp + detailNoise(wx, wz) * MICRO_AMP;
 		pos.setY(i, h);
 		// World-space UVs so the tiled ground map lines up across chunk seams.
