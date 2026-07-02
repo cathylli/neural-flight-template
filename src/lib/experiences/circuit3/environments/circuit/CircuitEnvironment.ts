@@ -1,0 +1,860 @@
+import * as THREE from "three";
+import {
+	buildTerrainMesh,
+	createTerrainMaterial,
+	setTerrainGrowth,
+	terrainCollisionHeight,
+	terrainRisesAboveBoard,
+} from "../../terrain";
+import { CHUNK_SIZE } from "../types";
+import type {
+	ChunkContent,
+	Environment,
+	EnvironmentBuildParams,
+} from "../types";
+
+// ── Circuit Environment (WFC circuit-board cityscape) ────────────────────────
+//
+// This is "Environment #0": the original Data-Room look — a Wave Function
+// Collapse circuit board with neon traces, rising buildings and an earthy
+// terrain overlay. It implements the generic Environment/ChunkContent contract
+// so the ChunkManager can drive it without knowing any of these specifics; a
+// future 3D Model-Synthesis environment plugs in the same way (see ../types.ts).
+//
+// Everything below the CircuitEnvironment class is this environment's private
+// generation machinery — the WFC solver, tile vocabulary, trace/pad geometry and
+// terrain overlay — none of it is visible to the manager.
+
+const CHUNK_GRID = 30; // tiles per chunk side
+const CELL = 4; // world units per tile — CHUNK_GRID * CELL must equal CHUNK_SIZE
+// The tile grid must fill exactly one chunk footprint, or chunks overlap / gap.
+if (CHUNK_GRID * CELL !== CHUNK_SIZE) {
+	throw new Error(
+		`CircuitEnvironment grid (${CHUNK_GRID} × ${CELL}) must equal CHUNK_SIZE (${CHUNK_SIZE})`,
+	);
+}
+const GROWTH_DURATION = 1.4; // seconds for buildings / terrain to rise
+const TRACE_W = CELL * 0.025; // ribbon half-width per trace
+const PAD_R = CELL * 0.11; // pad circle radius
+// Clearance (world units) a building keeps above the board plane before the
+// rising terrain claims its tile — buildings vanish a touch before the earth
+// reaches them rather than ending up half-buried at the contour.
+const TERRAIN_BUILD_CLEARANCE = 0.4;
+
+// ── WFC Tile System ──────────────────────────────────────────────────────────
+
+interface TileConnections {
+	north: boolean;
+	east: boolean;
+	south: boolean;
+	west: boolean;
+}
+
+interface TileDef {
+	id: number;
+	connections: TileConnections;
+	weight: number;
+	isBuilding: boolean;
+}
+
+const EMPTY = 0;
+const STRAIGHT_H = 1;
+const STRAIGHT_V = 2;
+const CORNER_NE = 3;
+const CORNER_NW = 4;
+const CORNER_SE = 5;
+const CORNER_SW = 6;
+const T_NORTH = 7;
+const T_SOUTH = 8;
+const T_EAST = 9;
+const T_WEST = 10;
+const CROSS = 11;
+const BUILDING_SMALL = 12;
+const BUILDING_TALL = 13;
+const BUILDING_WIDE = 14;
+const DIAG_NESW = 15; // 45° diagonal trace: SW corner → NE corner
+const DIAG_NWSE = 16; // 45° diagonal trace: NW corner → SE corner
+const STATION = 17; // unique per-level station anchor (single-spawn via flag)
+
+const TILES: TileDef[] = [
+	{ id: EMPTY,         connections: { north: false, east: false, south: false, west: false }, weight: 40,  isBuilding: false },
+	{ id: STRAIGHT_H,   connections: { north: false, east: true,  south: false, west: true  }, weight: 3,   isBuilding: false },
+	{ id: STRAIGHT_V,   connections: { north: true,  east: false, south: true,  west: false }, weight: 3,   isBuilding: false },
+	{ id: CORNER_NE,    connections: { north: true,  east: true,  south: false, west: false }, weight: 0.8, isBuilding: false },
+	{ id: CORNER_NW,    connections: { north: true,  east: false, south: false, west: true  }, weight: 0.8, isBuilding: false },
+	{ id: CORNER_SE,    connections: { north: false, east: true,  south: true,  west: false }, weight: 0.8, isBuilding: false },
+	{ id: CORNER_SW,    connections: { north: false, east: false, south: true,  west: true  }, weight: 0.8, isBuilding: false },
+	{ id: T_NORTH,      connections: { north: true,  east: true,  south: false, west: true  }, weight: 0.4, isBuilding: false },
+	{ id: T_SOUTH,      connections: { north: false, east: true,  south: true,  west: true  }, weight: 0.4, isBuilding: false },
+	{ id: T_EAST,       connections: { north: true,  east: true,  south: true,  west: false }, weight: 0.4, isBuilding: false },
+	{ id: T_WEST,       connections: { north: true,  east: false, south: true,  west: true  }, weight: 0.4, isBuilding: false },
+	{ id: CROSS,        connections: { north: true,  east: true,  south: true,  west: true  }, weight: 0.6, isBuilding: false },
+	{ id: BUILDING_SMALL, connections: { north: false, east: false, south: false, west: false }, weight: 2,   isBuilding: true },
+	{ id: BUILDING_TALL,  connections: { north: false, east: false, south: false, west: false }, weight: 1.5, isBuilding: true },
+	{ id: BUILDING_WIDE,  connections: { north: false, east: false, south: false, west: false }, weight: 1,   isBuilding: true },
+	{ id: DIAG_NESW,      connections: { north: false, east: false, south: false, west: false }, weight: 0.8, isBuilding: false },
+	{ id: DIAG_NWSE,      connections: { north: false, east: false, south: false, west: false }, weight: 0.8, isBuilding: false },
+	// Station: connectionless (sits like a footprint). Weight is supplied at
+	// runtime — 0 means "removed from the active set" until the level's
+	// station should spawn.
+	{ id: STATION,        connections: { north: false, east: false, south: false, west: false }, weight: 0,   isBuilding: false },
+];
+
+function compatible(
+	tileA: number,
+	tileB: number,
+	dir: "north" | "east" | "south" | "west",
+): boolean {
+	const a = TILES[tileA];
+	const b = TILES[tileB];
+	switch (dir) {
+		case "north": return a.connections.south === b.connections.north;
+		case "south": return a.connections.north === b.connections.south;
+		case "east":  return a.connections.west  === b.connections.east;
+		case "west":  return a.connections.east  === b.connections.west;
+	}
+}
+
+function weightedCollapse(
+	possibilities: Set<number>,
+	buildingDensity: number,
+	traceComplexity: number,
+	stationWeight: number,
+): number {
+	const options = Array.from(possibilities);
+	const weights = options.map((t) => {
+		const tile = TILES[t];
+		if (tile.id === STATION) return stationWeight;
+		if (tile.isBuilding)   return tile.weight * (buildingDensity * 3);
+		if (tile.id === EMPTY) return tile.weight * (1 - traceComplexity + 0.1);
+		if (tile.id === DIAG_NESW || tile.id === DIAG_NWSE)
+			return tile.weight * (0.4 + traceComplexity * 0.8);
+		return tile.weight * (0.5 + traceComplexity);
+	});
+	const total = weights.reduce((s, w) => s + w, 0);
+	let rand = Math.random() * total;
+	for (let i = 0; i < options.length; i++) {
+		rand -= weights[i];
+		if (rand <= 0) return options[i];
+	}
+	return options[options.length - 1];
+}
+
+function propagate(
+	cells: Set<number>[][],
+	collapsed: (number | null)[][],
+	size: number,
+	startRow: number,
+	startCol: number,
+): void {
+	const queue = [{ row: startRow, col: startCol }];
+	while (queue.length > 0) {
+		const cur = queue.shift()!;
+		const neighbors = [
+			{ row: cur.row - 1, col: cur.col,     dir: "north" as const },
+			{ row: cur.row + 1, col: cur.col,     dir: "south" as const },
+			{ row: cur.row,     col: cur.col + 1, dir: "east"  as const },
+			{ row: cur.row,     col: cur.col - 1, dir: "west"  as const },
+		];
+		for (const nb of neighbors) {
+			if (nb.row < 0 || nb.row >= size || nb.col < 0 || nb.col >= size) continue;
+			if (collapsed[nb.row][nb.col] !== null) continue;
+			const nbPoss = cells[nb.row][nb.col];
+			const curPoss = cells[cur.row][cur.col];
+			const toRemove: number[] = [];
+			for (const nbTile of nbPoss) {
+				let ok = false;
+				for (const curTile of curPoss) {
+					if (compatible(nbTile, curTile, nb.dir)) { ok = true; break; }
+				}
+				if (!ok) toRemove.push(nbTile);
+			}
+			if (toRemove.length > 0) {
+				for (const t of toRemove) nbPoss.delete(t);
+				if (nbPoss.size > 0) queue.push({ row: nb.row, col: nb.col });
+			}
+		}
+	}
+}
+
+// Remove trace-connected components that have no CROSS or T-junction terminator.
+// Every path on a real PCB must terminate at a junction node — isolated arcs are artifacts.
+function removeIsolatedLoops(grid: number[][]): void {
+	const size = grid.length;
+	const visited: boolean[][] = Array.from({ length: size }, () =>
+		new Array<boolean>(size).fill(false),
+	);
+
+	const dirs: Array<[number, number, keyof TileConnections, keyof TileConnections]> = [
+		[-1,  0, "north", "south"],
+		[ 1,  0, "south", "north"],
+		[ 0,  1, "east",  "west" ],
+		[ 0, -1, "west",  "east" ],
+	];
+
+	for (let sr = 0; sr < size; sr++) {
+		for (let sc = 0; sc < size; sc++) {
+			const tid = grid[sr][sc];
+			// Skip cells that are not part of the orthogonal trace network
+			if (
+				visited[sr][sc] ||
+				tid === EMPTY ||
+				TILES[tid].isBuilding ||
+				tid === DIAG_NESW ||
+				tid === DIAG_NWSE ||
+				tid === STATION
+			) {
+				visited[sr][sc] = true;
+				continue;
+			}
+
+			// BFS this connected component
+			const component: Array<[number, number]> = [];
+			let hasTerminator = false;
+			const queue: Array<[number, number]> = [[sr, sc]];
+			visited[sr][sc] = true;
+
+			while (queue.length > 0) {
+				const [r, c] = queue.shift()!;
+				component.push([r, c]);
+				const ct = grid[r][c];
+				if (ct === CROSS || ct === T_NORTH || ct === T_SOUTH || ct === T_EAST || ct === T_WEST) {
+					hasTerminator = true;
+				}
+				const myTile = TILES[ct];
+				for (const [dr, dc, myDir, theirDir] of dirs) {
+					const nr = r + dr, nc = c + dc;
+					if (nr < 0 || nr >= size || nc < 0 || nc >= size || visited[nr][nc]) continue;
+					const nt = grid[nr][nc];
+					if (TILES[nt].isBuilding || nt === DIAG_NESW || nt === DIAG_NWSE || nt === STATION) continue;
+					if (myTile.connections[myDir] && TILES[nt].connections[theirDir]) {
+						visited[nr][nc] = true;
+						queue.push([nr, nc]);
+					}
+				}
+			}
+
+			// No junction node → isolated arc/loop → erase
+			if (!hasTerminator) {
+				for (const [r, c] of component) {
+					grid[r][c] = EMPTY;
+				}
+			}
+		}
+	}
+}
+
+function runWFC(
+	buildingDensity: number,
+	traceComplexity: number,
+	stationWeight: number,
+): number[][] {
+	const size = CHUNK_GRID;
+
+	// Build per-cell possibility sets
+	const cells: Set<number>[][] = Array.from({ length: size }, () =>
+		Array.from({ length: size }, () => new Set(TILES.map((t) => t.id)))
+	);
+	const collapsed: (number | null)[][] = Array.from({ length: size }, () =>
+		Array(size).fill(null)
+	);
+
+	// Remove the STATION tile from the active set unless this chunk is allowed
+	// to host one — guarantees the unique single-spawn semantics.
+	if (stationWeight <= 0) {
+		for (let r = 0; r < size; r++) {
+			for (let c = 0; c < size; c++) cells[r][c].delete(STATION);
+		}
+	}
+
+	// Strip edge-facing connections at borders
+	for (let i = 0; i < size; i++) {
+		for (const { row, col } of [
+			{ row: 0, col: i }, { row: size - 1, col: i },
+			{ row: i, col: 0 }, { row: i, col: size - 1 },
+		]) {
+			const poss = cells[row][col];
+			for (const t of Array.from(poss)) {
+				const tile = TILES[t];
+				if (row === 0        && tile.connections.north) poss.delete(t);
+				if (row === size - 1 && tile.connections.south) poss.delete(t);
+				if (col === 0        && tile.connections.west)  poss.delete(t);
+				if (col === size - 1 && tile.connections.east)  poss.delete(t);
+			}
+		}
+	}
+
+	const maxIter = size * size * 2;
+	for (let iter = 0; iter < maxIter; iter++) {
+		// Find lowest-entropy uncollapsed cell
+		let minE = Infinity;
+		const candidates: { row: number; col: number }[] = [];
+		for (let r = 0; r < size; r++) {
+			for (let c = 0; c < size; c++) {
+				if (collapsed[r][c] !== null) continue;
+				const e = cells[r][c].size;
+				if (e === 0) continue;
+				if (e < minE) { minE = e; candidates.length = 0; }
+				if (e === minE) candidates.push({ row: r, col: c });
+			}
+		}
+		if (candidates.length === 0) break;
+
+		const target = candidates[Math.floor(Math.random() * candidates.length)];
+		const poss = cells[target.row][target.col];
+		const chosen = poss.size === 0
+			? EMPTY
+			: weightedCollapse(poss, buildingDensity, traceComplexity, stationWeight);
+
+		collapsed[target.row][target.col] = chosen;
+		cells[target.row][target.col] = new Set([chosen]);
+		propagate(cells, collapsed, size, target.row, target.col);
+	}
+
+	const result = Array.from({ length: size }, (_, r) =>
+		Array.from({ length: size }, (_, c) => collapsed[r][c] ?? EMPTY)
+	);
+	removeIsolatedLoops(result);
+	return result;
+}
+
+// ── Trace Geometry ────────────────────────────────────────────────────────────
+
+function addQuad(
+	arr: number[],
+	ax: number, ay: number, az: number,
+	bx: number, bz: number,
+): void {
+	const dx = bx - ax, dz = bz - az;
+	const len = Math.sqrt(dx * dx + dz * dz);
+	if (len < 1e-6) return;
+	const px = (-dz / len) * TRACE_W;
+	const pz = (dx  / len) * TRACE_W;
+	arr.push(
+		ax + px, ay, az + pz,  ax - px, ay, az - pz,  bx + px, ay, bz + pz,
+		ax - px, ay, az - pz,  bx - px, ay, bz - pz,  bx + px, ay, bz + pz,
+	);
+}
+
+function addDisc(arr: number[], cx: number, cy: number, cz: number): void {
+	const segs = 14;
+	for (let i = 0; i < segs; i++) {
+		const a0 = (i / segs) * Math.PI * 2;
+		const a1 = ((i + 1) / segs) * Math.PI * 2;
+		arr.push(
+			cx, cy, cz,
+			cx + Math.cos(a0) * PAD_R, cy, cz + Math.sin(a0) * PAD_R,
+			cx + Math.cos(a1) * PAD_R, cy, cz + Math.sin(a1) * PAD_R,
+		);
+	}
+}
+
+function buildTraceGeometry(grid: number[][]): {
+	traceVerts:    Float32Array;
+	padVerts:      Float32Array;
+	gridPositions: Float32Array;
+} {
+	const tv: number[] = [];
+	const pv: number[] = [];
+	const gv: number[] = [];
+	const size  = CHUNK_GRID;
+	const half  = CELL / 2;
+	const halfW = (CHUNK_GRID * CELL) / 2;
+	const yT    = 0.04;
+	const yP    = 0.05;
+	// Two parallel ribbons per connection, thin enough that they never overlap
+	const BUNDLE = [-CELL * 0.065, CELL * 0.065];
+
+	const seg = (ax: number, az: number, bx: number, bz: number) => {
+		const dx = bx - ax, dz = bz - az;
+		const len = Math.sqrt(dx * dx + dz * dz);
+		if (len < 1e-6) return;
+		const nx = -dz / len, nz = dx / len;
+		for (const o of BUNDLE) {
+			addQuad(tv, ax + nx * o, yT, az + nz * o, bx + nx * o, bz + nz * o);
+		}
+	};
+
+	const pad = (cx: number, cz: number) => addDisc(pv, cx, yP, cz);
+
+	// Pass 1: trace ribbons
+	for (let row = 0; row < size; row++) {
+		for (let col = 0; col < size; col++) {
+			const tileId = grid[row][col];
+			const tile   = TILES[tileId];
+			if (tile.isBuilding || tileId === EMPTY || tileId === STATION) continue;
+
+			const cx = col * CELL - halfW + CELL / 2;
+			const cz = row * CELL - halfW + CELL / 2;
+
+			switch (tileId) {
+				case DIAG_NESW:
+					seg(cx - half, cz + half, cx + half, cz - half);
+					pad(cx - half, cz + half);
+					pad(cx + half, cz - half);
+					break;
+				case DIAG_NWSE:
+					seg(cx - half, cz - half, cx + half, cz + half);
+					pad(cx - half, cz - half);
+					pad(cx + half, cz + half);
+					break;
+				case CORNER_NE: seg(cx, cz - half, cx + half, cz); break;
+				case CORNER_NW: seg(cx, cz - half, cx - half, cz); break;
+				case CORNER_SE: seg(cx, cz + half, cx + half, cz); break;
+				case CORNER_SW: seg(cx, cz + half, cx - half, cz); break;
+				default:
+					if (tile.connections.north) seg(cx, cz, cx, cz - half);
+					if (tile.connections.south) seg(cx, cz, cx, cz + half);
+					if (tile.connections.east)  seg(cx, cz, cx + half, cz);
+					if (tile.connections.west)  seg(cx, cz, cx - half, cz);
+			}
+		}
+	}
+
+	// Pass 2: pads only where a trace terminates (neighbor doesn't connect back)
+	for (let row = 0; row < size; row++) {
+		for (let col = 0; col < size; col++) {
+			const tileId = grid[row][col];
+			const tile   = TILES[tileId];
+			if (tile.isBuilding || tileId === EMPTY || tileId === DIAG_NESW || tileId === DIAG_NWSE || tileId === STATION) continue;
+
+			const cx = col * CELL - halfW + CELL / 2;
+			const cz = row * CELL - halfW + CELL / 2;
+
+			const endpoints: Array<[boolean, number, number, keyof TileConnections, number, number]> = [
+				[tile.connections.north, row - 1, col,     "south", cx,        cz - half],
+				[tile.connections.south, row + 1, col,     "north", cx,        cz + half],
+				[tile.connections.east,  row,     col + 1, "west",  cx + half, cz       ],
+				[tile.connections.west,  row,     col - 1, "east",  cx - half, cz       ],
+			];
+
+			for (const [hasConn, nr, nc, theirDir, ex, ez] of endpoints) {
+				if (!hasConn) continue;
+				const inBounds = nr >= 0 && nr < size && nc >= 0 && nc < size;
+				if (!inBounds || !TILES[grid[nr][nc]].connections[theirDir]) {
+					pad(ex, ez);
+				}
+			}
+		}
+	}
+
+	const ext = halfW;
+	for (let i = -ext; i <= ext; i += CELL) {
+		gv.push(-ext, 0.01, i, ext, 0.01, i);
+		gv.push(i, 0.01, -ext, i, 0.01, ext);
+	}
+
+	return {
+		traceVerts:    new Float32Array(tv),
+		padVerts:      new Float32Array(pv),
+		gridPositions: new Float32Array(gv),
+	};
+}
+
+// ── Shared Materials ──────────────────────────────────────────────────────────
+
+interface ChunkMaterials {
+	building:      THREE.MeshStandardMaterial;
+	buildingEdge:  THREE.LineBasicMaterial;
+	traceMesh:     THREE.MeshBasicMaterial;
+	gridLine:      THREE.LineBasicMaterial;
+	terrain:       THREE.MeshBasicMaterial;
+	dispose(): void;
+}
+
+function createChunkMaterials(neonColor: THREE.Color): ChunkMaterials {
+	const building = new THREE.MeshStandardMaterial({
+		color: 0x080818,
+		transparent: true,
+		opacity: 0.7,
+		metalness: 0.9,
+		roughness: 0.1,
+		side: THREE.DoubleSide,
+	});
+	const buildingEdge = new THREE.LineBasicMaterial({
+		color: neonColor,
+		transparent: true,
+		opacity: 0.9,
+	});
+	const traceMesh = new THREE.MeshBasicMaterial({
+		color: neonColor,
+		transparent: true,
+		opacity: 0.92,
+		side: THREE.DoubleSide,
+		depthWrite: false,
+	});
+	const gridLine = new THREE.LineBasicMaterial({
+		color: neonColor,
+		transparent: true,
+		opacity: 0.07,
+	});
+	const terrain = createTerrainMaterial();
+	return {
+		building,
+		buildingEdge,
+		traceMesh,
+		gridLine,
+		terrain,
+		dispose() {
+			building.dispose();
+			buildingEdge.dispose();
+			traceMesh.dispose();
+			gridLine.dispose();
+			terrain.dispose();
+		},
+	};
+}
+
+// ── CircuitChunk (ChunkContent) ───────────────────────────────────────────────
+
+interface BuildingAnim {
+	idx:          number;
+	lx:           number;
+	lz:           number;
+	targetHeight: number;
+	wx:           number;
+	wz:           number;
+	birthTime:    number;
+}
+
+// 12 edges × 2 vertices × 3 floats = 72 floats per building
+const FLOATS_PER_BUILDING_EDGE = 72;
+
+/** Fill 12 box edges (72 floats) into arr starting at offset, returns new offset */
+function fillBoxEdges(
+	arr: Float32Array,
+	o: number,
+	lx: number, lz: number,
+	wx: number, wz: number,
+	height: number,
+): number {
+	const hx = wx / 2, hz = wz / 2;
+	const x0 = lx - hx, x1 = lx + hx;
+	const z0 = lz - hz, z1 = lz + hz;
+	const y1 = height;
+	// Bottom ring
+	arr[o++]=x0; arr[o++]=0;  arr[o++]=z0; arr[o++]=x1; arr[o++]=0;  arr[o++]=z0;
+	arr[o++]=x1; arr[o++]=0;  arr[o++]=z0; arr[o++]=x1; arr[o++]=0;  arr[o++]=z1;
+	arr[o++]=x1; arr[o++]=0;  arr[o++]=z1; arr[o++]=x0; arr[o++]=0;  arr[o++]=z1;
+	arr[o++]=x0; arr[o++]=0;  arr[o++]=z1; arr[o++]=x0; arr[o++]=0;  arr[o++]=z0;
+	// Top ring
+	arr[o++]=x0; arr[o++]=y1; arr[o++]=z0; arr[o++]=x1; arr[o++]=y1; arr[o++]=z0;
+	arr[o++]=x1; arr[o++]=y1; arr[o++]=z0; arr[o++]=x1; arr[o++]=y1; arr[o++]=z1;
+	arr[o++]=x1; arr[o++]=y1; arr[o++]=z1; arr[o++]=x0; arr[o++]=y1; arr[o++]=z1;
+	arr[o++]=x0; arr[o++]=y1; arr[o++]=z1; arr[o++]=x0; arr[o++]=y1; arr[o++]=z0;
+	// Vertical pillars
+	arr[o++]=x0; arr[o++]=0;  arr[o++]=z0; arr[o++]=x0; arr[o++]=y1; arr[o++]=z0;
+	arr[o++]=x1; arr[o++]=0;  arr[o++]=z0; arr[o++]=x1; arr[o++]=y1; arr[o++]=z0;
+	arr[o++]=x1; arr[o++]=0;  arr[o++]=z1; arr[o++]=x1; arr[o++]=y1; arr[o++]=z1;
+	arr[o++]=x0; arr[o++]=0;  arr[o++]=z1; arr[o++]=x0; arr[o++]=y1; arr[o++]=z1;
+	return o;
+}
+
+// Shared base geometry: pivot at bottom so Y-scale grows upward
+const BUILDING_GEO = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
+
+class CircuitChunk implements ChunkContent {
+	readonly group = new THREE.Group();
+	/** World position of the station this chunk placed, or null if none. */
+	readonly stationSlot: THREE.Vector3 | null;
+
+	private buildingMesh:  THREE.InstancedMesh | null = null;
+	private edgePosArr:    Float32Array | null = null;
+	private edgePosAttr:   THREE.BufferAttribute | null = null;
+	private buildings:     BuildingAnim[] = [];
+	private grown = false;
+	private terrainMesh:   THREE.Mesh | null = null;
+	private terrainGrown = false;
+	private readonly spawnTime: number;
+	private readonly dummy = new THREE.Object3D();
+
+	constructor(
+		cx: number,
+		cz: number,
+		materials: ChunkMaterials,
+		params: EnvironmentBuildParams,
+		spawnTime: number,
+	) {
+		this.spawnTime = spawnTime;
+		this.group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
+		this.stationSlot = this.build(materials, params, spawnTime);
+	}
+
+	private build(
+		m: ChunkMaterials,
+		params: EnvironmentBuildParams,
+		spawnTime: number,
+	): THREE.Vector3 | null {
+		const { buildingDensity, traceComplexity, stationWeight, terrainLevel } = params;
+		const grid  = runWFC(buildingDensity, traceComplexity, stationWeight);
+		const halfW = (CHUNK_GRID * CELL) / 2;
+
+		// True when a hill has risen above the board plane at this tile's world
+		// position — the shared terrain test used to keep both buildings and the
+		// station off the hills.
+		const cellInTerrain = (row: number, col: number): boolean => {
+			const lx = col * CELL - halfW + CELL / 2;
+			const lz = row * CELL - halfW + CELL / 2;
+			return terrainRisesAboveBoard(
+				this.group.position.x + lx,
+				this.group.position.z + lz,
+				CHUNK_SIZE,
+				terrainLevel,
+				TERRAIN_BUILD_CLEARANCE,
+			);
+		};
+
+		// ── Station: enforce exactly one per chunk ─────────────────────────────
+		// When this chunk is allowed to host a station, keep a single STATION cell
+		// and clear any extras. Unlike buildings the station can't just be dropped
+		// — it's the level anchor the player must reach — so if the WFC put it (or
+		// all of its candidates) under a hill, it's relocated to flat ground.
+		let stationSlot: THREE.Vector3 | null = null;
+		if (stationWeight > 0) {
+			const stationCells: Array<[number, number]> = [];
+			for (let row = 0; row < CHUNK_GRID; row++) {
+				for (let col = 0; col < CHUNK_GRID; col++) {
+					if (grid[row][col] === STATION) stationCells.push([row, col]);
+				}
+			}
+
+			// Prefer a WFC station cell on flat ground; otherwise search outward from
+			// the chunk centre for the nearest flat tile (only a fully buried chunk
+			// falls back to the centre regardless).
+			let chosen = stationCells.find(([r, c]) => !cellInTerrain(r, c));
+			if (!chosen) {
+				const mid = Math.floor(CHUNK_GRID / 2);
+				chosen = [mid, mid];
+				outer: for (let radius = 0; radius < CHUNK_GRID; radius++) {
+					for (let dr = -radius; dr <= radius; dr++) {
+						for (let dc = -radius; dc <= radius; dc++) {
+							if (Math.max(Math.abs(dr), Math.abs(dc)) !== radius) continue; // ring edge only
+							const r = mid + dr, c = mid + dc;
+							if (r < 0 || r >= CHUNK_GRID || c < 0 || c >= CHUNK_GRID) continue;
+							if (!cellInTerrain(r, c)) { chosen = [r, c]; break outer; }
+						}
+					}
+				}
+			}
+
+			// Clear every WFC station cell, then place the single chosen one.
+			for (const [r, c] of stationCells) grid[r][c] = EMPTY;
+			const [sr, sc] = chosen;
+			grid[sr][sc] = STATION;
+
+			const lx = sc * CELL - halfW + CELL / 2;
+			const lz = sr * CELL - halfW + CELL / 2;
+			stationSlot = new THREE.Vector3(
+				this.group.position.x + lx,
+				0,
+				this.group.position.z + lz,
+			);
+		}
+
+		// Collect building definitions. Buildings are suppressed wherever the
+		// terrain has risen above the board plane at the tile's world position —
+		// sampled from the same heightfield the terrain mesh is built from, so the
+		// city only fills the flat ground and the growing hills push it back.
+		const buildingData: { lx: number; lz: number; tileId: number }[] = [];
+		for (let row = 0; row < CHUNK_GRID; row++) {
+			for (let col = 0; col < CHUNK_GRID; col++) {
+				const tileId = grid[row][col];
+				if (!TILES[tileId].isBuilding) continue;
+
+				if (cellInTerrain(row, col)) {
+					// Hill claims this tile — drop the building back to empty ground so
+					// traces/pads downstream treat it as empty too.
+					grid[row][col] = EMPTY;
+					continue;
+				}
+
+				const lx = col * CELL - halfW + CELL / 2;
+				const lz = row * CELL - halfW + CELL / 2;
+				buildingData.push({ lx, lz, tileId });
+			}
+		}
+
+		if (buildingData.length > 0) {
+			// ── Bodies: InstancedMesh (semi-transparent dark) ──────────────────
+			this.buildingMesh = new THREE.InstancedMesh(
+				BUILDING_GEO,
+				m.building,
+				buildingData.length,
+			);
+			this.buildingMesh.frustumCulled = false;
+
+			buildingData.forEach(({ lx, lz, tileId }, i) => {
+				let h: number, wx: number, wz: number;
+				switch (tileId) {
+					case BUILDING_TALL:
+						h = 8 + Math.random() * 16; wx = CELL * 0.5; wz = CELL * 0.5; break;
+					case BUILDING_WIDE:
+						h = 3 + Math.random() * 6;  wx = CELL * 0.8; wz = CELL * 0.8; break;
+					default:
+						h = 3 + Math.random() * 8;
+						wx = CELL * 0.4 + Math.random() * CELL * 0.2;
+						wz = CELL * 0.4 + Math.random() * CELL * 0.2;
+				}
+				this.buildings.push({ idx: i, lx, lz, targetHeight: h, wx, wz, birthTime: spawnTime });
+
+				// Start invisible — grows in update()
+				this.dummy.position.set(lx, 0, lz);
+				this.dummy.scale.set(wx, 0.001, wz);
+				this.dummy.rotation.set(0, 0, 0);
+				this.dummy.updateMatrix();
+				this.buildingMesh!.setMatrixAt(i, this.dummy.matrix);
+			});
+			this.buildingMesh.instanceMatrix.needsUpdate = true;
+			this.group.add(this.buildingMesh);
+
+			// ── Edges: merged dynamic LineSegments (neon wireframe) ────────────
+			const edgeArr = new Float32Array(buildingData.length * FLOATS_PER_BUILDING_EDGE);
+			// Initially all zero (height 0) — filled properly in first update()
+			this.edgePosArr  = edgeArr;
+			const attr = new THREE.BufferAttribute(edgeArr, 3);
+			attr.setUsage(THREE.DynamicDrawUsage);
+			this.edgePosAttr = attr;
+
+			const edgeGeo = new THREE.BufferGeometry();
+			edgeGeo.setAttribute("position", attr);
+			this.group.add(new THREE.LineSegments(edgeGeo, m.buildingEdge));
+		}
+
+		// ── Traces: flat ribbon meshes + pad discs ─────────────────────────
+		const { traceVerts, padVerts, gridPositions } = buildTraceGeometry(grid);
+
+		if (traceVerts.length > 0) {
+			const geo = new THREE.BufferGeometry();
+			geo.setAttribute("position", new THREE.Float32BufferAttribute(traceVerts, 3));
+			this.group.add(new THREE.Mesh(geo, m.traceMesh));
+		}
+		if (padVerts.length > 0) {
+			const geo = new THREE.BufferGeometry();
+			geo.setAttribute("position", new THREE.Float32BufferAttribute(padVerts, 3));
+			this.group.add(new THREE.Mesh(geo, m.traceMesh));
+		}
+		if (gridPositions.length > 0) {
+			const geo = new THREE.BufferGeometry();
+			geo.setAttribute("position", new THREE.Float32BufferAttribute(gridPositions, 3));
+			this.group.add(new THREE.LineSegments(geo, m.gridLine));
+		}
+
+		// ── Terrain overlay: continuous heightfield over the board ─────────────
+		// Sampled from this chunk's world origin so the surface stays seamless
+		// across chunk boundaries. Added to the group → shares the chunk's
+		// load/dispose lifecycle automatically.
+		const terrain = buildTerrainMesh(
+			this.group.position.x,
+			this.group.position.z,
+			CHUNK_SIZE,
+			m.terrain,
+			terrainLevel,
+		);
+		setTerrainGrowth(terrain, 0); // start flat; update() grows it in like the buildings
+		this.terrainMesh = terrain;
+		this.group.add(terrain);
+
+		return stationSlot;
+	}
+
+	update(elapsed: number): void {
+		// Terrain hills rise from flat to full height, same easing as the buildings.
+		if (this.terrainMesh && !this.terrainGrown) {
+			const t = Math.min((elapsed - this.spawnTime) / GROWTH_DURATION, 1.0);
+			const eased = 1.0 - (1.0 - t) ** 3; // ease-out cubic
+			setTerrainGrowth(this.terrainMesh, eased);
+			if (t >= 1.0) this.terrainGrown = true;
+		}
+
+		if (this.grown || this.buildings.length === 0) return;
+
+		let allDone = true;
+		for (const b of this.buildings) {
+			const t     = Math.min((elapsed - b.birthTime) / GROWTH_DURATION, 1.0);
+			const eased = 1.0 - (1.0 - t) ** 3; // ease-out cubic
+			if (t < 1.0) allDone = false;
+			const h = Math.max(0.001, eased * b.targetHeight);
+
+			// Animate body
+			if (this.buildingMesh) {
+				this.dummy.position.set(b.lx, 0, b.lz);
+				this.dummy.scale.set(b.wx, h, b.wz);
+				this.dummy.rotation.set(0, 0, 0);
+				this.dummy.updateMatrix();
+				this.buildingMesh.setMatrixAt(b.idx, this.dummy.matrix);
+			}
+
+			// Animate neon edges (same height as body)
+			if (this.edgePosArr) {
+				fillBoxEdges(this.edgePosArr, b.idx * FLOATS_PER_BUILDING_EDGE, b.lx, b.lz, b.wx, b.wz, h);
+			}
+		}
+
+		if (this.buildingMesh) this.buildingMesh.instanceMatrix.needsUpdate = true;
+		if (this.edgePosAttr) this.edgePosAttr.needsUpdate = true;
+
+		if (allDone) this.grown = true;
+	}
+
+	dispose(): void {
+		this.group.traverse((child) => {
+			if (child instanceof THREE.Mesh || child instanceof THREE.InstancedMesh) {
+				child.geometry.dispose();
+			} else if (child instanceof THREE.LineSegments) {
+				child.geometry.dispose();
+			}
+		});
+		this.group.clear();
+		this.buildings  = [];
+		this.edgePosArr  = null;
+		this.edgePosAttr = null;
+		this.grown = false;
+		this.terrainMesh = null;
+		this.terrainGrown = false;
+	}
+}
+
+// ── CircuitEnvironment (Environment) ──────────────────────────────────────────
+
+/**
+ * The WFC circuit-board environment. Owns the shared materials for its look and
+ * builds {@link CircuitChunk}s on demand. One instance is created per level that
+ * uses this environment (see ../registry.ts) so each can carry its own neon
+ * color; the ChunkManager swaps between instances on a level change.
+ */
+export class CircuitEnvironment implements Environment {
+	private readonly materials: ChunkMaterials;
+
+	constructor(neonColor: THREE.Color) {
+		this.materials = createChunkMaterials(neonColor);
+	}
+
+	buildChunk(
+		cx: number,
+		cz: number,
+		params: EnvironmentBuildParams,
+		spawnTime: number,
+	): ChunkContent {
+		return new CircuitChunk(cx, cz, this.materials, params, spawnTime);
+	}
+
+	updateNeonColor(color: THREE.Color): void {
+		this.materials.traceMesh.color.copy(color);
+		this.materials.gridLine.color.copy(color);
+		this.materials.buildingEdge.color.copy(color);
+	}
+
+	updateBuildingOpacity(opacity: number): void {
+		this.materials.building.opacity = opacity;
+	}
+
+	terrainHeightAt(x: number, z: number, terrainLevel: number): number {
+		// World-space surface of the terrain hills — matches the rendered mesh, so
+		// the player's flight collision clamps exactly to the visible ground.
+		return terrainCollisionHeight(x, z, CHUNK_SIZE, terrainLevel);
+	}
+
+	dispose(): void {
+		this.materials.dispose();
+	}
+}
