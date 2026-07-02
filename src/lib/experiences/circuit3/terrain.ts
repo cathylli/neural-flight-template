@@ -64,7 +64,7 @@ const ALPHA_CUTOFF = 0.5;
 // This *is* the "Platinen-Ebene" reference: wherever the sampled height rises
 // above this offset, earth pokes through the board (and buildings are removed,
 // see terrainRisesAboveBoard / ChunkManager).
-const TERRAIN_Y_OFFSET = -0.9;
+export const TERRAIN_Y_OFFSET = -0.9;
 
 // Earthy palette (sRGB hex), blended per vertex for natural soil variation.
 const C_SOIL = new THREE.Color(0x3a2614); // dark damp soil (low / sheltered)

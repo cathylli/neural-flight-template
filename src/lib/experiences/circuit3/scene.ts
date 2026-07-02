@@ -5,6 +5,7 @@ import { CAMERA, FLIGHT } from "$lib/config/flight";
 import { ChunkManager, CHUNK_SIZE } from "./ChunkManager";
 import { LevelState } from "./levelState";
 import { StationManager } from "./stations";
+import { sampleTerrainHeight, TERRAIN_Y_OFFSET } from "./terrain";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -92,7 +93,12 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     baseSpeed:     10,
     terrainSlowdown: FLIGHT.TERRAIN_SLOWDOWN,
   });
-  player.minClearance = -1000;
+  // Keep the player from flying through the floor and the terrain hills.
+  // FlightPlayer clamps the rig to `heightSampler(x, z) + minClearance`.
+  // minClearance is small to match this experience's low-altitude scale
+  // (spawn y = 3), unlike mountain-flight's default of 8. The sampler itself
+  // is injected below, once `state` exists (see the heightSampler assignment).
+  player.minClearance = 1.5;
   ctx.scene.add(player.rig);
 
   // Level progression — tracks chunks flown + stations visited, advances
@@ -144,6 +150,17 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     gridSize:        20,
     cellSize:        4,
   };
+
+  // Terrain collision surface: the higher of the visible ground plane and the
+  // terrain hills wherever they rise above it. Sampled from circuit3's own
+  // terrain (not the mountain heightmap FlightPlayer defaults to) and at the
+  // *current* level, so the surface the player can't pass through grows in step
+  // with the world (see terrain.ts / config.ts).
+  player.heightSampler = (x, z) =>
+    Math.max(
+      ground.position.y,
+      sampleTerrainHeight(x, z, CHUNK_SIZE, state.terrainLevel) + TERRAIN_Y_OFFSET,
+    );
 
   // On a level change, swap in the new level's tile set and rebuild the world.
   // The rebuild is deferred to the next tick (via _needsRebuild) because this
