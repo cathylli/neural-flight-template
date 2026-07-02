@@ -158,6 +158,15 @@ export class ChunkManager {
     this.suppressChunkCount = true;
   }
 
+  /**
+   * Collision surface world-Y from the *active* environment at (x, z), or null
+   * if it has no terrain. Routed through here so flight collision keeps
+   * following the current world across an environment swap.
+   */
+  terrainHeightAt(x: number, z: number, terrainLevel: number): number | null {
+    return this.environment.terrainHeightAt?.(x, z, terrainLevel) ?? null;
+  }
+
   updateNeonColor(color: THREE.Color): void {
     this.environment.updateNeonColor(color);
   }

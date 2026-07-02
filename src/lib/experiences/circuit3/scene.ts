@@ -131,7 +131,11 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     baseSpeed:     10,
     terrainSlowdown: FLIGHT.TERRAIN_SLOWDOWN,
   });
-  player.minClearance = -1000;
+  // Keep the player above the world instead of flying through the floor/hills.
+  // FlightPlayer clamps the rig to `heightSampler(x,z) + minClearance`; the
+  // sampler is injected below (once chunkManager + state exist). Clearance is
+  // small to match this experience's low-altitude scale (spawn y = 3).
+  player.minClearance = 1.5;
   ctx.scene.add(player.rig);
 
   // Black fade overlay: a small unlit quad parented to the camera, always
@@ -211,6 +215,14 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     pendingSwapLevel: null,
     gridSize:        20,
     cellSize:        4,
+  };
+
+  // Flight collision surface: the higher of the ground plane and the active
+  // environment's terrain hills at the current level. Routed through the chunk
+  // manager so it always follows whichever environment is live after a swap.
+  player.heightSampler = (x, z) => {
+    const terrainY = chunkManager.terrainHeightAt(x, z, state.terrainLevel) ?? -Infinity;
+    return Math.max(ground.position.y, terrainY);
   };
 
   // On a level change, fade to black and swap the environment at the darkest

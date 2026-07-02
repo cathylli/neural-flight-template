@@ -80,6 +80,13 @@ export interface Environment {
 	updateNeonColor(color: THREE.Color): void;
 	/** Live-update building opacity (settings panel). */
 	updateBuildingOpacity(opacity: number): void;
+	/**
+	 * Collision surface world-Y at (x, z) for the player's flight clamp, or null
+	 * if this environment has no terrain to collide with (the scene then falls
+	 * back to just its ground plane). Keeps flight collision following whatever
+	 * world is currently active after an environment swap.
+	 */
+	terrainHeightAt?(x: number, z: number, terrainLevel: number): number | null;
 	/** Free the shared materials this environment owns. */
 	dispose(): void;
 }

@@ -11,6 +11,13 @@ export interface FlightPlayerConfig {
 	spawnPosition?: { x: number; y: number; z: number };
 	baseSpeed?: number;
 	terrainSlowdown?: number;
+	/**
+	 * Terrain-height sampler (world x,z → surface world-Y). The player is kept at
+	 * least `minClearance` above whatever this returns. Defaults to the shared
+	 * mountain heightmap; experiences with their own terrain (e.g. circuit3)
+	 * inject a matching sampler so collision follows the world the player sees.
+	 */
+	heightSampler?: (x: number, z: number) => number;
 }
 
 const DEFAULTS: Required<FlightPlayerConfig> = {
@@ -20,6 +27,7 @@ const DEFAULTS: Required<FlightPlayerConfig> = {
 	spawnPosition: { x: 0, y: 50, z: 0 },
 	baseSpeed: 20,
 	terrainSlowdown: 0.7,
+	heightSampler: (x, z) => getHeight(x, z, DEFAULT_HEIGHTMAP),
 };
 
 /**
@@ -47,6 +55,8 @@ export class FlightPlayer {
 	lerpAlpha = 0.15;
 	rollYawMultiplier = 1.5;
 	minClearance = 8;
+	/** Terrain-height sampler — mutable so experiences can swap in their own. */
+	heightSampler: (x: number, z: number) => number;
 
 	constructor(config?: FlightPlayerConfig) {
 		const c = { ...DEFAULTS, ...config };
@@ -54,6 +64,7 @@ export class FlightPlayer {
 		this.baseSpeed = c.baseSpeed;
 		this.velocity = c.baseSpeed;
 		this.terrainSlowdown = c.terrainSlowdown;
+		this.heightSampler = c.heightSampler;
 
 		this.camera = new THREE.PerspectiveCamera(c.fov, 1, c.near, c.far);
 		this.rig = new THREE.Group();
@@ -114,10 +125,9 @@ export class FlightPlayer {
 	}
 
 	private clampToTerrain(): void {
-		const terrainY = getHeight(
+		const terrainY = this.heightSampler(
 			this.rig.position.x,
 			this.rig.position.z,
-			DEFAULT_HEIGHTMAP,
 		);
 		const minY = terrainY + this.minClearance;
 		if (this.rig.position.y < minY) {

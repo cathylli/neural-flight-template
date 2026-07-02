@@ -3,6 +3,7 @@ import {
 	buildTerrainMesh,
 	createTerrainMaterial,
 	setTerrainGrowth,
+	terrainCollisionHeight,
 	terrainRisesAboveBoard,
 } from "../../terrain";
 import { CHUNK_SIZE } from "../types";
@@ -845,6 +846,12 @@ export class CircuitEnvironment implements Environment {
 
 	updateBuildingOpacity(opacity: number): void {
 		this.materials.building.opacity = opacity;
+	}
+
+	terrainHeightAt(x: number, z: number, terrainLevel: number): number {
+		// World-space surface of the terrain hills — matches the rendered mesh, so
+		// the player's flight collision clamps exactly to the visible ground.
+		return terrainCollisionHeight(x, z, CHUNK_SIZE, terrainLevel);
 	}
 
 	dispose(): void {

@@ -162,6 +162,21 @@ export function terrainRisesAboveBoard(
 }
 
 /**
+ * World-space surface height of the terrain hills at (wx, wz) — i.e. the sampled
+ * height sunk to the board plane by {@link TERRAIN_Y_OFFSET}. This is the value
+ * the player's flight collision clamps against, so it lines up exactly with the
+ * rendered heightfield (which uses the same sample + offset).
+ */
+export function terrainCollisionHeight(
+	wx: number,
+	wz: number,
+	chunkSize: number,
+	level: number,
+): number {
+	return sampleTerrainHeight(wx, wz, chunkSize, level) + TERRAIN_Y_OFFSET;
+}
+
+/**
  * The terrain's own material: self-illuminated (ignores scene lights). The
  * alphaTest discards the transparent lows so only hills draw; vertex colors are
  * RGBA — RGB is earth + baked shade, A is the height-based visibility.
