@@ -5,6 +5,7 @@ import { CAMERA, FLIGHT } from "$lib/config/flight";
 import { ChunkManager, CHUNK_SIZE } from "./ChunkManager";
 import { LevelState } from "./levelState";
 import { StationManager } from "./stations";
+import { EnvironmentRegistry } from "./environments/registry";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -12,6 +13,7 @@ export interface WFCState extends ExperienceState {
   camera:          THREE.PerspectiveCamera;
   player:          FlightPlayer;
   chunkManager:    ChunkManager;
+  environments:    EnvironmentRegistry;
   levelState:      LevelState;
   stationManager:  StationManager;
   ground:          THREE.Mesh;
@@ -28,6 +30,12 @@ export interface WFCState extends ExperienceState {
   colorFrom:       THREE.Color; // color at the start of the active transition
   colorTo:         THREE.Color; // color we're fading toward
   colorProgress:   number;      // 0 → 1, reaches 1 when the fade is done
+  // Black overlay fade used to hide the environment swap on a level change.
+  fadeMesh:        THREE.Mesh;
+  fadeMaterial:    THREE.MeshBasicMaterial;
+  fade:            number;            // 0 = clear, 1 = fully black
+  fadeTarget:      number;            // where the fade is heading
+  pendingSwapLevel: number | null;    // level to swap the environment to at full black
   // Legacy fields kept so manifest parameter defaults still compile
   gridSize:        number;
   cellSize:        number;
@@ -36,6 +44,8 @@ export interface WFCState extends ExperienceState {
 
 /** Duration (seconds) of the neon color cross-fade on a level change. */
 const COLOR_TRANSITION_SECONDS = 2.5;
+/** Duration (seconds) of one direction of the black fade (out, then in). */
+const FADE_SECONDS = 0.4;
 
 /** Begin fading the neon color toward `target` from whatever is shown now. */
 function startColorTransition(s: WFCState, target: THREE.Color): void {
@@ -53,6 +63,35 @@ function updateColorTransition(s: WFCState, delta: number): void {
   // HSL lerp sweeps through the hue wheel — nicer than a muddy RGB blend.
   s.colorCurrent.copy(s.colorFrom).lerpHSL(s.colorTo, eased);
   s.chunkManager.updateNeonColor(s.colorCurrent);
+}
+
+/**
+ * Advance the black transition overlay. When a level change is pending and the
+ * screen reaches full black, swap the environment (which rebuilds the whole
+ * world) and start fading back in — so the player never sees the old world
+ * disappear or the new one pop into place.
+ */
+function updateFade(s: WFCState, delta: number): void {
+  const step = delta / FADE_SECONDS;
+  if (s.fade < s.fadeTarget) s.fade = Math.min(s.fadeTarget, s.fade + step);
+  else if (s.fade > s.fadeTarget) s.fade = Math.max(s.fadeTarget, s.fade - step);
+
+  if (s.pendingSwapLevel !== null && s.fade >= 1) {
+    const level = s.pendingSwapLevel;
+    s.pendingSwapLevel = null;
+    // Swap to this level's environment (its own tiles / materials / look) and
+    // force a full regeneration behind the black screen.
+    const env = s.environments.forLevel(level, new THREE.Color(s.neonColor));
+    s.chunkManager.setEnvironment(env, {
+      buildingDensity: s.buildingDensity,
+      traceComplexity: s.traceComplexity,
+      terrainLevel:    s.terrainLevel,
+    });
+    s.fadeTarget = 0; // reveal the freshly built world
+  }
+
+  s.fadeMaterial.opacity = s.fade;
+  s.fadeMesh.visible = s.fade > 0.001;
 }
 
 // ── Lifecycle: setup() ─────────────────────────────────────────────────────
@@ -95,6 +134,24 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   player.minClearance = -1000;
   ctx.scene.add(player.rig);
 
+  // Black fade overlay: a small unlit quad parented to the camera, always
+  // filling the view. Its opacity is animated in tick() to hide the environment
+  // swap on a level change. depthTest off + high renderOrder → drawn over
+  // everything; sits just beyond the near plane so it's never clipped.
+  const fadeMaterial = new THREE.MeshBasicMaterial({
+    color:       0x000000,
+    transparent: true,
+    opacity:     0,
+    depthTest:   false,
+    depthWrite:  false,
+  });
+  const fadeMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fadeMaterial);
+  fadeMesh.position.z = -0.2;
+  fadeMesh.renderOrder = 999;
+  fadeMesh.frustumCulled = false;
+  fadeMesh.visible = false;
+  player.camera.add(fadeMesh);
+
   // Level progression — tracks chunks flown + stations visited, advances
   // the world through its three narrative levels.
   const levelState = new LevelState();
@@ -104,15 +161,20 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   const stationManager = new StationManager(ctx.scene);
   stationManager.onVisit = (level) => levelState.markStationVisited(level);
 
-  // Chunk manager — generates the world procedurally around the player.
-  // Every newly explored chunk feeds the level-progression counter, and the
-  // station manager decides if/where each chunk hosts its level's station.
+  // Environments — one per level, cached (see registry.ts). Level 0 uses the
+  // circuit environment; the manager swaps the active one on a level change.
+  const environments = new EnvironmentRegistry();
+  const environment = environments.forLevel(0, new THREE.Color(neonColorStr));
+
+  // Chunk manager — generic streaming driver around the player. Every newly
+  // explored chunk feeds the level-progression counter, and the station manager
+  // decides if/where each chunk hosts its level's station.
   const chunkManager = new ChunkManager(
     ctx.scene,
+    environment,
     {
       buildingDensity,
       traceComplexity,
-      neonColor: neonColorStr,
       terrainLevel: levelState.currentLevel,
     },
     () => {
@@ -127,6 +189,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     player,
     camera:          player.camera,
     chunkManager,
+    environments,
     levelState,
     stationManager,
     ground,
@@ -141,20 +204,28 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     colorFrom:       new THREE.Color(neonColorStr),
     colorTo:         new THREE.Color(neonColorStr),
     colorProgress:   1,
+    fadeMesh,
+    fadeMaterial,
+    fade:            0,
+    fadeTarget:      0,
+    pendingSwapLevel: null,
     gridSize:        20,
     cellSize:        4,
   };
 
-  // On a level change, swap in the new level's tile set and rebuild the world.
-  // The rebuild is deferred to the next tick (via _needsRebuild) because this
-  // listener fires synchronously from inside chunkManager.update().
+  // On a level change, fade to black and swap the environment at the darkest
+  // point (see updateFade in tick). The swap replaces the whole world with the
+  // new level's environment — new tiles / materials / look — not just tweaked
+  // parameters.
   levelState.onLevelChange((snap) => {
     state.buildingDensity = snap.tileSet.buildingDensity;
     state.traceComplexity = snap.tileSet.traceComplexity;
     state.neonColor       = snap.tileSet.neonColor;
     state.terrainLevel    = snap.currentLevel;
-    state._needsRebuild   = true;
-    // Cross-fade the neon color over time instead of snapping it.
+    // Begin the fade-out; the actual environment swap happens at full black.
+    state.pendingSwapLevel = snap.currentLevel;
+    state.fadeTarget       = 1;
+    // Cross-fade the neon color over time as well.
     startColorTransition(state, new THREE.Color(snap.tileSet.neonColor));
     // The new level's station becomes eligible to spawn.
     stationManager.setLevel(snap.currentLevel);
@@ -174,9 +245,11 @@ export function tick(
 
   s.player.tick(ctx.delta);
 
-  // Handle rebuild triggered by settings panel or level change. The neon
-  // color is intentionally omitted — it cross-fades separately (see below)
-  // so a structural rebuild never snaps the color.
+  // Drive the black fade + perform the environment swap at full black.
+  updateFade(s, ctx.delta);
+
+  // Handle rebuild triggered by the settings panel (structural WFC changes).
+  // Level changes go through the fade/swap path above instead.
   if (s._needsRebuild) {
     s._needsRebuild = false;
     s.chunkManager.rebuild(
@@ -212,7 +285,12 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   const s = state as WFCState;
 
   s.chunkManager.dispose();
+  s.environments.dispose();
   s.stationManager.dispose();
+
+  s.fadeMesh.removeFromParent();
+  s.fadeMesh.geometry.dispose();
+  s.fadeMaterial.dispose();
 
   s.ground.geometry.dispose();
   if (s.ground.material instanceof THREE.Material) s.ground.material.dispose();
