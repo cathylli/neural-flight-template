@@ -49,17 +49,16 @@ export interface WFCState extends ExperienceState {
   testCubeExploded: boolean;
   testCubeExplodeTime: number;
   testCubeFadeStart: number;
+  testCubeFlyFrom: THREE.Vector3;
+  testCubeFlyTo: THREE.Vector3;
+  testCubeFlyDuration: number;
   testCubeTarget: THREE.Vector3;
   testParticles: {
-    positions: Float32Array;
+    meshes: THREE.Mesh[];
     velocities: THREE.Vector3[];
     lifetimes: Float32Array;
     maxLifetimes: Float32Array;
-    startColors: Float32Array;
-    colors: Float32Array;
-    geo: THREE.BufferGeometry | null;
-    mat: THREE.PointsMaterial | null;
-    points: THREE.Points | null;
+    blinkPhases: Float32Array;
   };
   // Legacy fields kept so manifest parameter defaults still compile
   gridSize: number;
@@ -166,8 +165,8 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     metalness: 0.6,
     roughness: 0.2,
   });
-  const testCube = new THREE.Mesh(new THREE.BoxGeometry(8, 8, 8), testCubeMat);
-  testCube.position.set(0, 20, -100);
+  const testCube = new THREE.Mesh(new THREE.BoxGeometry(14, 14, 14), testCubeMat);
+  testCube.position.set(15, 5, 30);
   ctx.scene.add(testCube);
 
   const testCubeEdgeMat = new THREE.LineBasicMaterial({
@@ -176,51 +175,38 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     opacity: 0.9,
   });
   const testCubeEdges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(new THREE.BoxGeometry(8, 8, 8)),
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(14, 14, 14)),
     testCubeEdgeMat,
   );
   testCubeEdges.position.copy(testCube.position);
   ctx.scene.add(testCubeEdges);
 
-  // Pre-allocate particle buffers for cube explosion
+  // Pre-allocate particle cubes for test cube explosion
   const PARTICLE_COUNT = 120;
-  const testParticlePos = new Float32Array(PARTICLE_COUNT * 3);
-  const testParticleColors = new Float32Array(PARTICLE_COUNT * 3);
-  const testParticleStartColors = new Float32Array(PARTICLE_COUNT * 3);
   const testParticleVelocities: THREE.Vector3[] = [];
   const testParticleLifetimes = new Float32Array(PARTICLE_COUNT);
   const testParticleMaxLifetimes = new Float32Array(PARTICLE_COUNT);
+  const testParticleMeshes: THREE.Mesh[] = [];
+  const testParticleBlinkPhases = new Float32Array(PARTICLE_COUNT);
+  const particleCubeMat = new THREE.MeshStandardMaterial({
+    color: 0x00ff66,
+    emissive: 0x00ff66,
+    emissiveIntensity: 1,
+  });
+  const particleCubeGeo = new THREE.BoxGeometry(0.6, 0.6, 0.6);
   for (let i = 0; i < PARTICLE_COUNT; i++) {
-    testParticlePos[i * 3 + 1] = -9999;
     testParticleVelocities.push(new THREE.Vector3(0, 0, 0));
     testParticleLifetimes[i] = 0;
     testParticleMaxLifetimes[i] = 1;
+    testParticleBlinkPhases[i] = Math.random() * Math.PI * 2;
+    const mesh = new THREE.Mesh(
+      particleCubeGeo.clone(),
+      particleCubeMat.clone(),
+    );
+    mesh.visible = false;
+    ctx.scene.add(mesh);
+    testParticleMeshes.push(mesh);
   }
-  const testParticleGeo = new THREE.BufferGeometry();
-  testParticleGeo.setAttribute(
-    "position",
-    new THREE.BufferAttribute(testParticlePos, 3).setUsage(
-      THREE.DynamicDrawUsage,
-    ),
-  );
-  testParticleGeo.setAttribute(
-    "color",
-    new THREE.BufferAttribute(testParticleColors, 3).setUsage(
-      THREE.DynamicDrawUsage,
-    ),
-  );
-  testParticleGeo.setDrawRange(0, 0);
-  const testParticleMat = new THREE.PointsMaterial({
-    size: 1.0,
-    blending: THREE.AdditiveBlending,
-    transparent: true,
-    opacity: 1,
-    depthWrite: false,
-    vertexColors: true,
-  });
-  const testParticlePoints = new THREE.Points(testParticleGeo, testParticleMat);
-  testParticlePoints.frustumCulled = false;
-  ctx.scene.add(testParticlePoints);
 
   // Player
   const player = new FlightPlayer({
@@ -337,19 +323,18 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     testCube,
     testCubeEdges,
     testCubeExploded: false,
-    testCubeExplodeTime: 3.5,
+    testCubeExplodeTime: 13,
     testCubeFadeStart: 0,
-    testCubeTarget: new THREE.Vector3(0, 30, -150),
+    testCubeFlyFrom: new THREE.Vector3(15, 5, 30),
+    testCubeFlyTo: new THREE.Vector3(0, 20, -150),
+    testCubeFlyDuration: 6,
+    testCubeTarget: new THREE.Vector3(0, 20, -250),
     testParticles: {
-      positions: testParticlePos,
+      meshes: testParticleMeshes,
       velocities: testParticleVelocities,
       lifetimes: testParticleLifetimes,
       maxLifetimes: testParticleMaxLifetimes,
-      startColors: testParticleStartColors,
-      colors: testParticleColors,
-      geo: testParticleGeo,
-      mat: testParticleMat,
-      points: testParticlePoints,
+      blinkPhases: testParticleBlinkPhases,
     },
     gridSize: 20,
     cellSize: 4,
@@ -426,6 +411,16 @@ export function tick(
   // Station trigger volumes + per-frame station animation
   s.stationManager.update(playerPos, s.elapsed, ctx.delta);
 
+  // ── Test cube fly-in ───────────────────────────────────────────────
+  if (s.testCube && !s.testCubeExploded && s.elapsed < s.testCubeFlyDuration) {
+    const t = s.elapsed / s.testCubeFlyDuration;
+    const st = t * t * (3 - 2 * t);
+    s.testCube.position.lerpVectors(s.testCubeFlyFrom, s.testCubeFlyTo, st);
+    if (s.testCubeEdges) {
+      s.testCubeEdges.position.copy(s.testCube.position);
+    }
+  }
+
   // ── Test cube rotation + fade explosion ────────────────────────────
   if (s.testCube && !s.testCubeExploded) {
     s.testCube.rotation.x += ctx.delta * 0.4;
@@ -458,25 +453,23 @@ export function tick(
         const p = s.testParticles;
 
         for (let i = 0; i < 120; i++) {
-          p.positions[i * 3] = pos.x + (Math.random() - 0.5) * 3;
-          p.positions[i * 3 + 1] = pos.y + (Math.random() - 0.5) * 3;
-          p.positions[i * 3 + 2] = pos.z + (Math.random() - 0.5) * 3;
+          const mesh = p.meshes[i];
+          mesh.position.set(
+            pos.x + (Math.random() - 0.5) * 3,
+            pos.y + (Math.random() - 0.5) * 3,
+            pos.z + (Math.random() - 0.5) * 3,
+          );
+          mesh.visible = true;
+          mesh.scale.setScalar(1);
 
-          const speed = 60 + Math.random() * 40;
+          const speed = 15 + Math.random() * 15;
           p.velocities[i].set(
-            (Math.random() - 0.5) * 50,
             (Math.random() - 0.5) * 20,
+            (Math.random() - 0.5) * 12,
             -speed,
           );
 
-          p.startColors[i * 3] = 1;
-          p.startColors[i * 3 + 1] = 1;
-          p.startColors[i * 3 + 2] = 1;
-          p.colors[i * 3] = 1;
-          p.colors[i * 3 + 1] = 1;
-          p.colors[i * 3 + 2] = 1;
-
-          p.lifetimes[i] = 9 + Math.random() * 2;
+          p.lifetimes[i] = 18 + Math.random() * 6;
           p.maxLifetimes[i] = p.lifetimes[i];
         }
       }
@@ -484,33 +477,39 @@ export function tick(
   }
 
   // ── Test cube particle update ──────────────────────────────────────
-  if (s.testCubeExploded && s.testParticles.points) {
+  if (s.testCubeExploded && s.testParticles.meshes.length > 0) {
     const p = s.testParticles;
-    let alive = 0;
+    const explodeTime = s.testCubeFadeStart + 0.5;
+    const timeSinceExplosion = s.elapsed - explodeTime;
+    const gatherStrength = Math.min(
+      Math.max((timeSinceExplosion - 1.5) * 0.5, 0),
+      1,
+    );
+    const tmpVec = new THREE.Vector3();
     for (let i = 0; i < 120; i++) {
       if (p.lifetimes[i] <= 0) continue;
       p.lifetimes[i] -= ctx.delta;
       if (p.lifetimes[i] <= 0) {
-        p.positions[i * 3 + 1] = -9999;
+        p.meshes[i].visible = false;
         continue;
       }
-      alive++;
       const vel = p.velocities[i];
-      p.positions[i * 3] += vel.x * ctx.delta;
-      p.positions[i * 3 + 1] += vel.y * ctx.delta;
-      p.positions[i * 3 + 2] += vel.z * ctx.delta;
-      vel.multiplyScalar(0.998);
+      if (gatherStrength > 0) {
+        tmpVec.copy(s.testCubeTarget).sub(p.meshes[i].position).normalize();
+        vel.add(tmpVec.multiplyScalar(gatherStrength * 8 * ctx.delta));
+      }
+      p.meshes[i].position.x += vel.x * ctx.delta;
+      p.meshes[i].position.y += vel.y * ctx.delta;
+      p.meshes[i].position.z += vel.z * ctx.delta;
+      vel.multiplyScalar(0.999);
       const t = p.lifetimes[i] / p.maxLifetimes[i];
-      const fade = t < 0.15 ? t / 0.15 : 1;
-      p.colors[i * 3] = p.startColors[i * 3] * fade;
-      p.colors[i * 3 + 1] = p.startColors[i * 3 + 1] * fade;
-      p.colors[i * 3 + 2] = p.startColors[i * 3 + 2] * fade;
-      alive++;
-    }
-    if (p.geo) {
-      p.geo.attributes.position.needsUpdate = true;
-      p.geo.attributes.color.needsUpdate = true;
-      p.geo.setDrawRange(0, alive);
+      const scl = t < 0.15 ? t / 0.15 : 1;
+      p.meshes[i].scale.setScalar(Math.max(scl, 0.01));
+      p.meshes[i].rotation.x += ctx.delta * 2;
+      p.meshes[i].rotation.y += ctx.delta * 3;
+      const blink = 0.5 + 0.5 * Math.sin(s.elapsed * 6 + p.blinkPhases[i]);
+      const mat = p.meshes[i].material as THREE.MeshStandardMaterial;
+      mat.emissiveIntensity = blink;
     }
   }
 
@@ -546,10 +545,10 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
       s.testCubeEdges.material.dispose();
     scene.remove(s.testCubeEdges);
   }
-  if (s.testParticles.points) {
-    scene.remove(s.testParticles.points);
-    s.testParticles.geo?.dispose();
-    s.testParticles.mat?.dispose();
+  for (const mesh of s.testParticles.meshes) {
+    mesh.geometry.dispose();
+    (mesh.material as THREE.Material).dispose();
+    scene.remove(mesh);
   }
 
   s.ground.geometry.dispose();
