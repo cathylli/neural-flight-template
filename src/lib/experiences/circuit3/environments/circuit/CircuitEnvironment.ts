@@ -831,10 +831,12 @@ export class CircuitEnvironment implements Environment {
 
 	buildChunk(
 		cx: number,
+		_cy: number,
 		cz: number,
 		params: EnvironmentBuildParams,
 		spawnTime: number,
 	): ChunkContent {
+		// Ground-based environment: no vertical streaming, so `cy` is always 0.
 		return new CircuitChunk(cx, cz, this.materials, params, spawnTime);
 	}
 

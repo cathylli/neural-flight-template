@@ -22,6 +22,15 @@ import * as THREE from "three";
  */
 export const CHUNK_SIZE = 120;
 
+/**
+ * Vertical extent (units) of one chunk *layer*, used only when an Environment
+ * opts into vertical streaming (see `Environment.verticalRadius`). Kept equal to
+ * CHUNK_SIZE so a chunk is a cube and layers stack seamlessly in Y just like
+ * chunks tile in X/Z. Environments that don't stream vertically never see more
+ * than the `cy = 0` layer, so this constant is irrelevant to them.
+ */
+export const CHUNK_HEIGHT = CHUNK_SIZE;
+
 /** Chunk render radius around the player (1 → a 3×3 = 9 chunk window). */
 export const RENDER_RADIUS = 1;
 
@@ -73,11 +82,24 @@ export interface EnvironmentBuildParams {
  */
 export interface Environment {
 	/**
-	 * Build the chunk at chunk-grid coordinate (cx, cz). `spawnTime` is the scene
-	 * clock at spawn, used to drive the growth animation.
+	 * How many chunk *layers* above and below the player this environment wants
+	 * streamed in Y (0 → only the ground layer `cy = 0`, the default and the
+	 * behaviour every ground-based environment relies on). A value ≥ 1 turns the
+	 * world into a true 3D volume the player can fly up/down through indefinitely;
+	 * the ChunkManager reads this to size its vertical streaming window. Only the
+	 * `cy = 0` layer participates in station placement and level progression, so a
+	 * vertical environment stacks purely-visual layers on top of the ground one.
+	 */
+	readonly verticalRadius?: number;
+	/**
+	 * Build the chunk at chunk-grid coordinate (cx, cy, cz). `cy` is always 0
+	 * unless this environment set `verticalRadius > 0`; ground-based environments
+	 * ignore it and place everything at world-Y 0. `spawnTime` is the scene clock
+	 * at spawn, used to drive the growth animation.
 	 */
 	buildChunk(
 		cx: number,
+		cy: number,
 		cz: number,
 		params: EnvironmentBuildParams,
 		spawnTime: number,

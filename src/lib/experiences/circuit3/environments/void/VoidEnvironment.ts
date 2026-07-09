@@ -50,10 +50,12 @@ class VoidChunk implements ChunkContent {
 export class VoidEnvironment implements Environment {
 	buildChunk(
 		cx: number,
+		_cy: number,
 		cz: number,
 		params: EnvironmentBuildParams,
 		_spawnTime: number,
 	): ChunkContent {
+		// Ground-based environment: no vertical streaming, so `cy` is always 0.
 		return new VoidChunk(cx, cz, params.stationWeight);
 	}
 

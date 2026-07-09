@@ -5,7 +5,7 @@ import type {
   Environment,
   EnvironmentBuildParams,
 } from "./environments/types";
-import { CHUNK_SIZE, RENDER_RADIUS } from "./environments/types";
+import { CHUNK_SIZE, CHUNK_HEIGHT, RENDER_RADIUS } from "./environments/types";
 
 // Re-exported so existing importers (scene.ts) keep a single import site.
 export { CHUNK_SIZE };
@@ -38,6 +38,7 @@ export class ChunkManager {
   private params: ChunkGenParams;
   private activeChunks = new Map<string, ChunkContent>();
   private lastPlayerCX = Infinity;
+  private lastPlayerCY = Infinity;
   private lastPlayerCZ = Infinity;
   /** Called once per newly generated chunk. Suppressed during rebuilds. */
   private onChunkGenerated?: () => void;
@@ -68,12 +69,25 @@ export class ChunkManager {
   update(playerPos: THREE.Vector3, elapsed: number): void {
     const playerCX = Math.floor(playerPos.x / CHUNK_SIZE + 0.5);
     const playerCZ = Math.floor(playerPos.z / CHUNK_SIZE + 0.5);
+    // The vertical index only matters when the active environment opts into
+    // vertical streaming; otherwise it is pinned to the ground layer so a change
+    // in flight altitude never triggers a reconcile (behaviour of every
+    // ground-based environment stays identical to a 2D X/Z stream).
+    const playerCY =
+      (this.environment.verticalRadius ?? 0) > 0
+        ? Math.floor(playerPos.y / CHUNK_HEIGHT + 0.5)
+        : 0;
 
     // Only recalculate active set when the player crosses a chunk boundary
-    if (playerCX !== this.lastPlayerCX || playerCZ !== this.lastPlayerCZ) {
+    if (
+      playerCX !== this.lastPlayerCX ||
+      playerCY !== this.lastPlayerCY ||
+      playerCZ !== this.lastPlayerCZ
+    ) {
       this.lastPlayerCX = playerCX;
+      this.lastPlayerCY = playerCY;
       this.lastPlayerCZ = playerCZ;
-      this.reconcileChunks(playerCX, playerCZ, elapsed);
+      this.reconcileChunks(playerCX, playerCY, playerCZ, elapsed);
     }
 
     // Always animate chunk growth
@@ -82,11 +96,23 @@ export class ChunkManager {
     }
   }
 
-  private reconcileChunks(pcx: number, pcz: number, elapsed: number): void {
+  private reconcileChunks(
+    pcx: number,
+    pcy: number,
+    pcz: number,
+    elapsed: number,
+  ): void {
+    // Vertical window height comes from the active environment; 0 (the default)
+    // collapses the Y loop to a single `cy = pcy = 0` layer, i.e. exactly the
+    // old 2D X/Z streaming. Keys carry all three axes so a vertical environment
+    // can hold stacked layers at the same (cx, cz) without them colliding.
+    const vr = this.environment.verticalRadius ?? 0;
     const desired = new Set<string>();
     for (let dx = -RENDER_RADIUS; dx <= RENDER_RADIUS; dx++) {
       for (let dz = -RENDER_RADIUS; dz <= RENDER_RADIUS; dz++) {
-        desired.add(`${pcx + dx},${pcz + dz}`);
+        for (let dy = -vr; dy <= vr; dy++) {
+          desired.add(`${pcx + dx},${pcy + dy},${pcz + dz}`);
+        }
       }
     }
 
@@ -96,22 +122,35 @@ export class ChunkManager {
         this.scene.remove(chunk.group);
         chunk.dispose();
         this.activeChunks.delete(key);
-        const [cx, cz] = key.split(",").map(Number);
-        this.stationPolicy?.onChunkUnloaded(cx, cz);
+        const [cx, cy, cz] = key.split(",").map(Number);
+        // Station bookkeeping lives on the ground layer only (see spawn below),
+        // so only that layer reports an unload.
+        if (cy === 0) this.stationPolicy?.onChunkUnloaded(cx, cz);
       }
     }
 
     // Spawn new chunks
     for (const key of desired) {
       if (this.activeChunks.has(key)) continue;
-      const [cx, cz] = key.split(",").map(Number);
-      const stationWeight =
-        this.stationPolicy?.stationWeightFor(cx, cz, pcx, pcz) ?? 0;
+      const [cx, cy, cz] = key.split(",").map(Number);
+      // Only the ground layer hosts stations and counts toward level
+      // progression — vertical layers are purely-visual volume on top of it, so
+      // they never spawn a station nor inflate the explored-chunk counter.
+      const isGroundLayer = cy === 0;
+      const stationWeight = isGroundLayer
+        ? (this.stationPolicy?.stationWeightFor(cx, cz, pcx, pcz) ?? 0)
+        : 0;
       const buildParams: EnvironmentBuildParams = {
         ...this.params,
         stationWeight,
       };
-      const chunk = this.environment.buildChunk(cx, cz, buildParams, elapsed);
+      const chunk = this.environment.buildChunk(
+        cx,
+        cy,
+        cz,
+        buildParams,
+        elapsed,
+      );
       this.scene.add(chunk.group);
       this.activeChunks.set(key, chunk);
       // Report a placed station before the next chunk is built, so the policy
@@ -123,7 +162,7 @@ export class ChunkManager {
       // Count genuinely-explored chunks only — repopulation after a rebuild or
       // an environment swap regenerates the same positions and must not inflate
       // the level-progression counter.
-      if (!this.suppressChunkCount) this.onChunkGenerated?.();
+      if (!this.suppressChunkCount && isGroundLayer) this.onChunkGenerated?.();
     }
 
     // First reconcile after a rebuild / swap is done — resume counting.
@@ -158,6 +197,7 @@ export class ChunkManager {
       this.activeChunks.delete(key);
     }
     this.lastPlayerCX = Infinity; // forces reconcileChunks on next update
+    this.lastPlayerCY = Infinity;
     this.lastPlayerCZ = Infinity;
     // The forced reconcile re-spawns the same chunk positions — don't let that
     // repopulation count toward level progression.
@@ -171,6 +211,16 @@ export class ChunkManager {
    */
   terrainHeightAt(x: number, z: number, terrainLevel: number): number | null {
     return this.environment.terrainHeightAt?.(x, z, terrainLevel) ?? null;
+  }
+
+  /**
+   * Whether the active world has a solid ground plane the player rests above.
+   * A vertically-streamed (volumetric) environment has none — the player must be
+   * able to fly down through it indefinitely — so the scene drops both the flight
+   * floor clamp and the visible ground mesh while such an environment is live.
+   */
+  hasGroundFloor(): boolean {
+    return (this.environment.verticalRadius ?? 0) === 0;
   }
 
   updateNeonColor(color: THREE.Color): void {
