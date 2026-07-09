@@ -29,7 +29,7 @@ const CATALOG: Record<string, ExperienceManifest> = {
   "network": network,
 };
 
-export const DEFAULT_EXPERIENCE_ID = "mountain-flight";
+export const DEFAULT_EXPERIENCE_ID = "circuit3";
 
 /** Get experience by ID — throws with available IDs if not found */
 export function getExperience(id: string): ExperienceManifest {

@@ -30,6 +30,11 @@ export const CONTROLS = {
 	},
 } as const;
 
+export const ICAROS_HOST = {
+	MAX_PITCH_DEGREES: 45,
+	MAX_ROLL_DEGREES: 45,
+} as const;
+
 export const M5_BRIDGE = {
 	QUALITY_THRESHOLD: 0.5,
 	DEADZONE_DEGREES: 1.5,

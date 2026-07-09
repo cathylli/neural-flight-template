@@ -165,7 +165,10 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     metalness: 0.6,
     roughness: 0.2,
   });
-  const testCube = new THREE.Mesh(new THREE.BoxGeometry(14, 14, 14), testCubeMat);
+  const testCube = new THREE.Mesh(
+    new THREE.BoxGeometry(14, 14, 14),
+    testCubeMat,
+  );
   testCube.position.set(15, 5, 30);
   ctx.scene.add(testCube);
 
