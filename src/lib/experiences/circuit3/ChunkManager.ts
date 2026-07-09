@@ -24,6 +24,12 @@ export interface ChunkGenParams {
   traceComplexity: number;
   /** Current level — passed through to the environment (e.g. terrain amplitude). */
   terrainLevel: number;
+  /** Particles per chunk (network environment). */
+  particleCount?: number;
+  /** Max distance for particle connections (network environment). */
+  connectionDistance?: number;
+  /** Particle drift speed (network environment). */
+  driftSpeed?: number;
 }
 
 export class ChunkManager {

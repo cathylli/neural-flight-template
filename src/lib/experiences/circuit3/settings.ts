@@ -57,6 +57,20 @@ export function applySettings(
       s.animateData = value as boolean;
       break;
 
+    // Network (L1) — trigger full chunk rebuild so new params take effect
+    case "particleCount":
+      s.particleCount = value as number;
+      s._needsRebuild = true;
+      break;
+    case "connectionDistance":
+      s.connectionDistance = value as number;
+      s._needsRebuild = true;
+      break;
+    case "driftSpeed":
+      s.driftSpeed = value as number;
+      s._needsRebuild = true;
+      break;
+
     default:
       break;
   }

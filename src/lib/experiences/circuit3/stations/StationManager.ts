@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { LEVEL_THRESHOLDS, LEVEL_TILE_SETS } from "../config";
+import { FlyingParticles } from "./FlyingParticles";
 import { createStationVisual } from "./registry";
 import type { StationVisual } from "./types";
 
@@ -100,12 +101,22 @@ export class StationManager implements StationSpawnPolicy {
   private readonly visitedStations: ActiveStation[] = [];
   /** Every live visual, for per-frame animation and disposal. */
   private readonly visuals: StationVisual[] = [];
+  /**
+   * Particle swarms that continue to exist after their station was destroyed.
+   * They drift/flat and eventually fly toward the next level's station.
+   */
+  private readonly transit: FlyingParticles[] = [];
+  /** Persistent scene group holding transit particles (survives chunk rebuilds). */
+  private readonly transitGroup = new THREE.Group();
 
   /** Fired when the player enters a station's trigger volume (once per station). */
   onVisit?: (level: number) => void;
+  /** Fired when a new station is placed in the world (after spawn delay). */
+  onStationPlaced?: (position: THREE.Vector3, level: number) => void;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+    this.scene.add(this.transitGroup);
     this.visited = new Array(LEVEL_TILE_SETS.length).fill(false);
     // Level 0 never goes through setLevel, so seed its spawn delay here — the
     // very first station should also only appear after the player has flown on.
@@ -137,6 +148,7 @@ export class StationManager implements StationSpawnPolicy {
       radiusSq: TRIGGER_RADIUS * TRIGGER_RADIUS,
       visual: this.spawnVisual(level, worldPos),
     };
+    this.onStationPlaced?.(worldPos, level);
   }
 
   /**
@@ -181,21 +193,33 @@ export class StationManager implements StationSpawnPolicy {
   }
 
   /**
-   * Per-frame update: animate every live station and run the proximity check —
-   * firing onVisit when the player enters the active trigger volume.
+   * Per-frame update: animate every live station, run the proximity check —
+   * firing onVisit when the player enters the active trigger volume — and tick
+   * any transit particles that are flying between stations.
    */
-  update(playerPos: THREE.Vector3, elapsed: number): void {
+  update(playerPos: THREE.Vector3, elapsed: number, delta: number): void {
     for (const visual of this.visuals) visual.update?.(elapsed);
 
-    if (!this.active) return;
-    if (playerPos.distanceToSquared(this.active.center) <= this.active.radiusSq) {
+    if (this.active && playerPos.distanceToSquared(this.active.center) <= this.active.radiusSq) {
       const visited = this.active;
+
+      // Trigger the visual's shatter effect and take ownership of particles
+      const particles = visited.visual.onVisit?.() ?? null;
+      if (particles) {
+        visited.visual.object.remove(particles.group);
+        this.transitGroup.add(particles.group);
+        this.transit.push(particles);
+      }
+
       this.visited[visited.level] = true;
       // Keep the visual around until its chunk unloads, then it disappears.
       this.visitedStations.push(visited);
       this.active = null;
       this.onVisit?.(visited.level);
     }
+
+    // Tick transit particles (exploding → floating debris)
+    for (const p of this.transit) p.update(delta);
   }
 
   // ── Visuals ───────────────────────────────────────────────────────────────
@@ -225,5 +249,13 @@ export class StationManager implements StationSpawnPolicy {
     for (const visual of [...this.visuals]) this.removeVisual(visual);
     this.active = null;
     this.visitedStations.length = 0;
+
+    // Clean up transit particles
+    for (const p of this.transit) {
+      this.transitGroup.remove(p.group);
+      p.dispose();
+    }
+    this.transit.length = 0;
+    this.scene.remove(this.transitGroup);
   }
 }
