@@ -7,6 +7,7 @@ import type { ExperienceManifest } from "./types";
 import { manifest as circuit } from "./circuit";
 import { manifest as circuit2 } from "./circuit2";
 import { manifest as circuit3 } from "./circuit3";
+import { manifest as network } from "./network";
 
 // ── Registry ──
 //
@@ -25,6 +26,7 @@ const CATALOG: Record<string, ExperienceManifest> = {
   "circuit": circuit,
   "circuit2": circuit2,
   "circuit3": circuit3,
+  "network": network,
 };
 
 export const DEFAULT_EXPERIENCE_ID = "mountain-flight";

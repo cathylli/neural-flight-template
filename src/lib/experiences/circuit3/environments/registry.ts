@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { CircuitEnvironment } from "./circuit/CircuitEnvironment";
+import { FragmentationEnvironment } from "./fragmentation/FragmentationEnvironment";
+import { NetworkEnvironment } from "./network/NetworkEnvironment";
 import type { Environment } from "./types";
 
 // ── Environment Registry ──────────────────────────────────────────────────────
@@ -21,9 +23,10 @@ import type { Environment } from "./types";
 type EnvironmentFactory = (neonColor: THREE.Color) => Environment;
 
 const ENVIRONMENT_FACTORIES: EnvironmentFactory[] = [
-	(c) => new CircuitEnvironment(c), // L0 — clean data room
-	(c) => new CircuitEnvironment(c), // L1 — router network (placeholder: same look for now)
-	(c) => new CircuitEnvironment(c), // L2 — server farm / brain (placeholder: same look for now)
+	(c) => new CircuitEnvironment(c),      // L0 — clean data room
+	()  => new NetworkEnvironment(),       // L1 — particle network
+	()  => new FragmentationEnvironment(), // L2 — data packet fragmentation
+	(c) => new CircuitEnvironment(c),      // L3 — server farm / brain
 ];
 
 /**

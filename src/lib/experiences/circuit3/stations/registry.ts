@@ -1,3 +1,4 @@
+import { BeaconStation } from "./BeaconStation";
 import { CubeStation } from "./CubeStation";
 import { ParticleStation } from "./ParticleStation";
 import type { StationContext, StationFactory, StationVisual } from "./types";
@@ -11,8 +12,9 @@ import type { StationContext, StationFactory, StationVisual } from "./types";
 /** level index → factory building that level's station visual. */
 const STATION_FACTORIES: StationFactory[] = [
   (ctx) => new CubeStation(ctx),     // L0 — clean data room
-  (ctx) => new ParticleStation(ctx), // L1 — router network
-  (ctx) => new CubeStation(ctx),     // L2 — server farm / brain
+  (ctx) => new BeaconStation(ctx),   // L1 — empty void (beacon only, cube is separate)
+  (ctx) => new ParticleStation(ctx), // L2 — router network
+  (ctx) => new CubeStation(ctx),     // L3 — server farm / brain
 ];
 
 /**

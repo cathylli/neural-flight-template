@@ -58,6 +58,12 @@ export interface EnvironmentBuildParams {
 	terrainLevel: number;
 	/** Station-tile weight from the policy; 0 = no station in this chunk. */
 	stationWeight: number;
+	/** Particles per chunk (network environment). */
+	particleCount?: number;
+	/** Max distance for particle connections (network environment). */
+	connectionDistance?: number;
+	/** Particle drift speed (network environment). */
+	driftSpeed?: number;
 }
 
 /**

@@ -4,10 +4,11 @@
 // Kept local to the experience (not in the global flight config) since these
 // values only describe how this experience generates and advances its world.
 //
-// The Data Room is a continuous journey across three narrative levels:
+// The Data Room is a continuous journey across narrative levels:
 //   0 — clean abstract data room
-//   1 — router network (terrain starts mixing in)
-//   2 — AI server farm / "brain" (industrial, resource-heavy)
+//   1 — particle network (nodes drift and dynamically connect)
+//   2 — data packet fragmentation (big cubes explode into particles)
+//   3 — AI server farm / "brain"
 //
 // Each level runs the same scripted sequence (one number per level, below):
 //   1. On entering level N the per-level chunk counter restarts at 0.
@@ -29,7 +30,7 @@
  * — the counter restarts on every level change). The same value feeds the
  * station spawn delay in stations.ts, so station and threshold stay in lock-step.
  */
-export const LEVEL_THRESHOLDS: number[] = [8, 8, 8];
+export const LEVEL_THRESHOLDS: number[] = [8, 6, 8, 8];
 
 /** Per-level generation parameters fed to the ChunkManager on a level change. */
 export interface LevelTileSet {
@@ -44,9 +45,11 @@ export interface LevelTileSet {
 export const LEVEL_TILE_SETS: LevelTileSet[] = [
 	// L0 — clean data room
 	{ buildingDensity: 0.3, traceComplexity: 0.6, neonColor: "#00ff66" },
-	// L1 — router network
-	{ buildingDensity: 0.3, traceComplexity: 0.6, neonColor: "#33aaff" },
-	// L2 — server farm / brain
+	// L1 — particle network
+	{ buildingDensity: 0,   traceComplexity: 0,   neonColor: "#00ffcc" },
+	// L2 — data packet fragmentation
+	{ buildingDensity: 0,   traceComplexity: 0,   neonColor: "#ff6600" },
+	// L3 — server farm / brain
 	{ buildingDensity: 0.5, traceComplexity: 0.6, neonColor: "#ff22bd" },
 ];
 
@@ -69,7 +72,7 @@ export const LEVEL_TILE_SETS: LevelTileSet[] = [
  *   L1, L2…  : each level a notch higher.
  * Add/extend entries if more levels are introduced (see LEVEL_TILE_SETS).
  */
-const TERRAIN_LEVEL_AMPLITUDE: number[] = [0, 10, 25];
+const TERRAIN_LEVEL_AMPLITUDE: number[] = [0, 0, 10, 25];
 
 /** On the final level only, extra amplitude added per chunk of distance flown. */
 const TERRAIN_FINAL_DISTANCE_GAIN = 2.5;

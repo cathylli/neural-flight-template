@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { FlyingParticles } from "./FlyingParticles";
 
 // ── Station Visuals — the per-station contract ───────────────────────────────
 //
@@ -35,6 +36,14 @@ export interface StationVisual {
   readonly object: THREE.Object3D;
   /** Per-frame animation hook. `elapsed` is the scene clock in seconds. */
   update?(elapsed: number): void;
+  /**
+   * Called when the player enters this station's trigger volume.
+   * The visual may return a FlyingParticles swarm that continues to exist
+   * beyond the station's lifetime — the StationManager takes ownership
+   * and will eventually fly them toward the next level's station.
+   * Return null if no particle effect is desired.
+   */
+  onVisit?(): FlyingParticles | null;
   /** Free all geometries / materials this visual owns. */
   dispose(): void;
 }
