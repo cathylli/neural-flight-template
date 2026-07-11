@@ -349,7 +349,11 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   player.heightSampler = (x, z) => {
     const terrainY =
       chunkManager.terrainHeightAt(x, z, state.terrainLevel) ?? -Infinity;
-    return Math.max(ground.position.y, terrainY);
+    // A volumetric environment (e.g. the neural network) has no floor — the
+    // player flies through it in all directions — so the ground plane drops out
+    // of the clamp and only the environment's own terrain (if any) applies.
+    const floorY = chunkManager.hasGroundFloor() ? ground.position.y : -Infinity;
+    return Math.max(floorY, terrainY);
   };
 
   // On a level change, fade to black and swap the environment at the darkest
@@ -516,7 +520,10 @@ export function tick(
     }
   }
 
-  // Keep the ground centered under the player so it always covers the view
+  // Keep the ground centered under the player so it always covers the view.
+  // Hidden entirely for volumetric environments, which have no floor and would
+  // otherwise show an opaque plane cutting through the 3D network.
+  s.ground.visible = s.chunkManager.hasGroundFloor();
   s.ground.position.x = playerPos.x;
   s.ground.position.z = playerPos.z;
 

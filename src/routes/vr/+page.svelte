@@ -23,7 +23,7 @@ import {
 	PUBLIC_ICAROS_HOST_ORIGIN,
 	PUBLIC_ICAROS_EXPERIENCE_TITLE,
 } from "$env/static/public";
-import { ICAROS_HOST } from "$lib/config/flight";
+import { CONTROLS, ICAROS_HOST } from "$lib/config/flight";
 
 let canvas: HTMLCanvasElement;
 let renderer: THREE.WebGLRenderer;
@@ -55,8 +55,64 @@ const clock = new THREE.Clock();
 let lastOrientation = { pitch: 0, roll: 0 };
 let lastSpeed = { accelerate: false, brake: false };
 let removeResizeListener: (() => void) | null = null;
+let removeKeyboardListeners: (() => void) | null = null;
 let stopHandshake: (() => void) | null = null;
 let stopController: (() => void) | null = null;
+
+// Keyboard fallback for desktop testing — mirrors ControlPad behaviour exactly
+let kbPitch = 0;
+let kbRoll = 0;
+let keyboardActive = false;
+
+function kbPress(button: "UP" | "DOWN" | "LEFT" | "RIGHT"): void {
+	if (icarosActive) return;
+	const dir = CONTROLS.BUTTONS[button];
+	const [minPitch, maxPitch] = CONTROLS.PITCH_RANGE;
+	const [minRoll, maxRoll] = CONTROLS.ROLL_RANGE;
+	kbPitch = Math.max(
+		minPitch,
+		Math.min(maxPitch, kbPitch + dir.pitch * CONTROLS.STEP_DEGREES),
+	);
+	kbRoll = Math.max(
+		minRoll,
+		Math.min(maxRoll, kbRoll + dir.roll * CONTROLS.STEP_DEGREES),
+	);
+	keyboardActive = true;
+}
+
+function kbRelease(): void {
+	kbPitch = 0;
+	kbRoll = 0;
+	keyboardActive = false;
+}
+
+function handleKeyDown(e: KeyboardEvent): void {
+	const map: Record<string, "UP" | "DOWN" | "LEFT" | "RIGHT"> = {
+		ArrowUp: "UP",
+		ArrowDown: "DOWN",
+		ArrowLeft: "LEFT",
+		ArrowRight: "RIGHT",
+	};
+	const button = map[e.key];
+	if (button) {
+		e.preventDefault();
+		kbPress(button);
+	}
+}
+
+function handleKeyUp(e: KeyboardEvent): void {
+	const map: Record<string, "UP" | "DOWN" | "LEFT" | "RIGHT"> = {
+		ArrowUp: "UP",
+		ArrowDown: "DOWN",
+		ArrowLeft: "LEFT",
+		ArrowRight: "RIGHT",
+	};
+	if (map[e.key]) kbRelease();
+}
+
+function handleBlur(): void {
+	kbRelease();
+}
 
 onMount(() => {
 	scene = new THREE.Scene();
@@ -107,6 +163,16 @@ onMount(() => {
 		);
 	}
 
+	// Keyboard fallback for desktop testing (disabled when ICAROS is active)
+	window.addEventListener("keydown", handleKeyDown);
+	window.addEventListener("keyup", handleKeyUp);
+	window.addEventListener("blur", handleBlur);
+	removeKeyboardListeners = () => {
+		window.removeEventListener("keydown", handleKeyDown);
+		window.removeEventListener("keyup", handleKeyUp);
+		window.removeEventListener("blur", handleBlur);
+	};
+
 	// Load whichever experience is selected (persisted in localStorage)
 	const experienceId = getActiveExperienceId();
 
@@ -132,8 +198,8 @@ onMount(() => {
 				if (msg && msg.timestamp > lastProcessedTimestamp) {
 					lastProcessedTimestamp = msg.timestamp;
 
-					// Only use WS orientation when ICAROS Host is not active
-					if (!icarosActive && isOrientationData(msg)) {
+					// Use WS orientation from controller page / gyro page
+					if (isOrientationData(msg)) {
 						lastOrientation = { pitch: msg.pitch, roll: msg.roll };
 					}
 					if (isSpeedCommand(msg)) {
@@ -152,6 +218,12 @@ onMount(() => {
 							);
 						}
 					}
+				}
+
+				// Keyboard overrides WebSocket when keys are pressed (never overrides ICAROS)
+				if (keyboardActive) {
+					lastOrientation = { pitch: kbPitch, roll: kbRoll };
+					lastSpeed = { accelerate: false, brake: false };
 				}
 
 				exp.manifest.updatePlayer(lastOrientation, lastSpeed, exp.state, delta);
@@ -174,15 +246,17 @@ onMount(() => {
 
 	return () => {
 		removeResizeListener?.();
+		removeKeyboardListeners?.();
 	};
 });
 
-onDestroy(() => {
+	onDestroy(() => {
 	renderer?.setAnimationLoop(null);
 	if (scene) unloadExperience(scene);
 	renderer?.dispose();
 	vrButton?.remove();
 	ws.disconnect();
+	removeKeyboardListeners?.();
 	stopHandshake?.();
 	stopController?.();
 });
