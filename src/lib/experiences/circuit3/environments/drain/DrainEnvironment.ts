@@ -163,6 +163,10 @@ class DrainChunk implements ChunkContent {
 	private readonly servers: THREE.Group[] = [];
 	private readonly spawnTime: number;
 	private grown = false;
+	/** Chunk grid coords — stored so servers can be retrofitted after async load. */
+	private readonly cx: number;
+	private readonly cz: number;
+	private readonly liveChunks: Set<DrainChunk>;
 
 	constructor(
 		cx: number,
@@ -176,11 +180,16 @@ class DrainChunk implements ChunkContent {
 		heatMat: THREE.ShaderMaterial,
 		serverTemplate: THREE.Group | null,
 		spawnTime: number,
+		liveChunks: Set<DrainChunk>,
 	) {
 		const ox = cx * CHUNK_SIZE;
 		const oz = cz * CHUNK_SIZE;
 		this.group.position.set(ox, 0, oz);
 		this.spawnTime = spawnTime;
+		this.cx = cx;
+		this.cz = cz;
+		this.liveChunks = liveChunks;
+		liveChunks.add(this);
 
 		// Start scaled to 0 for growth animation
 		this.group.scale.set(1, 0.001, 1);
@@ -349,7 +358,36 @@ class DrainChunk implements ChunkContent {
 		}
 	}
 
+	/** Whether this chunk already has server models placed. */
+	get hasServers(): boolean {
+		return this.servers.length > 0;
+	}
+
+	/**
+	 * Retroactively populate servers into a chunk that was built before the
+	 * GLB model finished loading. Uses the same placement logic as the
+	 * constructor.
+	 */
+	addServers(template: THREE.Group): void {
+		if (this.servers.length > 0) return;
+		const halfChunk = (GRID * CELL) / 2;
+		for (let sx = -halfChunk + SERVER_SPACING / 2; sx < halfChunk; sx += SERVER_SPACING) {
+			for (let sz = -halfChunk + SERVER_SPACING / 2; sz < halfChunk; sz += SERVER_SPACING) {
+				const gx = Math.floor((sx + halfChunk) / CELL);
+				const gz = Math.floor((sz + halfChunk) / CELL);
+				if (gx >= 0 && gx < GRID && gz >= 0 && gz < GRID && isHole(this.cx, this.cz, gx, gz)) {
+					continue;
+				}
+				const server = template.clone();
+				server.position.set(sx, 0, sz);
+				this.group.add(server);
+				this.servers.push(server);
+			}
+		}
+	}
+
 	dispose(): void {
+		this.liveChunks.delete(this);
 		for (const t of this.tiles) {
 			t.geometry.dispose();
 		}
@@ -412,6 +450,8 @@ export class DrainEnvironment implements Environment {
 	private serverTemplate: THREE.Group | null = null;
 	private serverLoading = false;
 	private sky: THREE.Mesh | null = null;
+	/** All live chunks — used to retrofit servers once the GLB finishes loading. */
+	private liveChunks = new Set<DrainChunk>();
 
 	private async loadServerModel(): Promise<void> {
 		if (this.serverTemplate || this.serverLoading) return;
@@ -428,6 +468,10 @@ export class DrainEnvironment implements Environment {
 			});
 
 			this.serverTemplate = model;
+			// Retrofit any chunks that were built before the model was ready
+			for (const chunk of this.liveChunks) {
+				if (!chunk.hasServers) chunk.addServers(model);
+			}
 		} catch (e) {
 			console.warn("Failed to load server model:", e);
 		}
@@ -458,6 +502,7 @@ export class DrainEnvironment implements Environment {
 			this.heatMat,
 			this.serverTemplate,
 			spawnTime,
+			this.liveChunks,
 		);
 	}
 
@@ -504,6 +549,9 @@ export class DrainEnvironment implements Environment {
 			],
 		});
 		scene.add(this.sky);
+
+		// Preload server model so it's ready before the first chunks build
+		this.loadServerModel();
 	}
 
 	dispose(): void {
@@ -522,8 +570,10 @@ export class DrainEnvironment implements Environment {
 			});
 		}
 		if (this.sky) {
+			this.sky.parent?.remove(this.sky);
 			this.sky.geometry.dispose();
 			(this.sky.material as THREE.Material).dispose();
+			this.sky = null;
 		}
 	}
 }
