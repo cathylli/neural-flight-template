@@ -140,13 +140,20 @@ export class StationManager implements StationSpawnPolicy {
     const level = this.currentLevel;
     if (level < 0 || level >= this.visited.length) return;
     if (this.visited[level] || this.active) return; // ignore extras
+    const visual = this.spawnVisual(level, worldPos);
+    // Station visuals may define a static TRIGGER_RADIUS to override the default.
+    const visualCtor = Object.getPrototypeOf(visual).constructor;
+    const radius =
+      typeof visualCtor.TRIGGER_RADIUS === "number"
+        ? visualCtor.TRIGGER_RADIUS
+        : TRIGGER_RADIUS;
     this.active = {
       level,
       cx,
       cz,
       center: worldPos.clone(),
-      radiusSq: TRIGGER_RADIUS * TRIGGER_RADIUS,
-      visual: this.spawnVisual(level, worldPos),
+      radiusSq: radius * radius,
+      visual,
     };
     this.onStationPlaced?.(worldPos, level);
   }
@@ -212,6 +219,7 @@ export class StationManager implements StationSpawnPolicy {
       }
 
       this.visited[visited.level] = true;
+      visited.visual.object.visible = false;
       // Keep the visual around until its chunk unloads, then it disappears.
       this.visitedStations.push(visited);
       this.active = null;

@@ -31,8 +31,8 @@ export const CHUNK_SIZE = 120;
  */
 export const CHUNK_HEIGHT = CHUNK_SIZE;
 
-/** Chunk render radius around the player (1 → a 3×3 = 9 chunk window). */
-export const RENDER_RADIUS = 1;
+/** Chunk render radius around the player (3 → a 7×7 = 49 chunk window). */
+export const RENDER_RADIUS = 3;
 
 /**
  * A single generated chunk, opaque to the ChunkManager. The manager only adds
@@ -115,6 +115,10 @@ export interface Environment {
 	 * world is currently active after an environment swap.
 	 */
 	terrainHeightAt?(x: number, z: number, terrainLevel: number): number | null;
+	/** Called once after construction with the THREE.Scene for global visuals. */
+	init?(scene: THREE.Scene): void;
+	/** Per-frame animation hook (dome pulse, beacon glow, etc). */
+	tick?(delta: number, playerPos?: THREE.Vector3): void;
 	/** Free the shared materials this environment owns. */
 	dispose(): void;
 }

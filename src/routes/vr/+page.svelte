@@ -58,6 +58,7 @@ let removeResizeListener: (() => void) | null = null;
 let removeKeyboardListeners: (() => void) | null = null;
 let stopHandshake: (() => void) | null = null;
 let stopController: (() => void) | null = null;
+let jumpToLevel: ((level: number) => void) | null = null;
 
 // Keyboard fallback for desktop testing — mirrors ControlPad behaviour exactly
 let kbPitch = 0;
@@ -87,6 +88,13 @@ function kbRelease(): void {
 }
 
 function handleKeyDown(e: KeyboardEvent): void {
+	// Level switching: keys 1-7 (levels 0-6)
+	if (e.key >= "1" && e.key <= "7" && jumpToLevel) {
+		e.preventDefault();
+		jumpToLevel(Number.parseInt(e.key, 10) - 1);
+		return;
+	}
+
 	const map: Record<string, "UP" | "DOWN" | "LEFT" | "RIGHT"> = {
 		ArrowUp: "UP",
 		ArrowDown: "DOWN",
@@ -181,6 +189,15 @@ onMount(() => {
 			experienceName = exp.manifest.name;
 			hasOutputs = (exp.manifest.outputs?.length ?? 0) > 0;
 			const renderCamera = exp.state.camera as THREE.PerspectiveCamera;
+
+			// Level switching for circuit3 experience (testing)
+			const state = exp.state as Record<string, unknown>;
+			if (state.levelState && typeof state.levelState === "object") {
+				const ls = state.levelState as { jumpToLevel?: (n: number) => void };
+				if (typeof ls.jumpToLevel === "function") {
+					jumpToLevel = ls.jumpToLevel.bind(ls);
+				}
+			}
 
 			function onResize(): void {
 				renderCamera.aspect = window.innerWidth / window.innerHeight;

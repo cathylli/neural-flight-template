@@ -35,7 +35,7 @@ const NEURAL_CONFIG = {
 	// Palette (change colours here) --------------------------------------------
 	nodeColor: 0xdfe6ff, // router blobs
 	pathColor: 0x4a5cff, // nerve tubes
-	packetColor: 0xffffff, // data packets travelling the paths
+	packetColor: 0x00ff66, // data packets travelling the paths (green cubes)
 	glowColor: 0x6f8bff, // soft halo behind each node
 
 	// Density ------------------------------------------------------------------
@@ -217,10 +217,9 @@ class NeuralChunk implements ChunkContent {
 	private readonly tubeMat: THREE.MeshBasicMaterial;
 	private readonly tubeMesh: THREE.Mesh | null;
 	private readonly packets: PacketState[] = [];
-	private readonly packetGeo: THREE.BufferGeometry | null;
-	private readonly packetPos: Float32Array | null;
-	private readonly packetColor: Float32Array | null;
-	private readonly packetPoints: THREE.Points | null;
+	private readonly packetBoxGeo: THREE.BoxGeometry;
+	private readonly packetMat: THREE.MeshStandardMaterial;
+	private readonly packetMesh: THREE.InstancedMesh | null;
 
 	constructor(
 		cx: number,
@@ -392,43 +391,37 @@ class NeuralChunk implements ChunkContent {
 			this.tubeMesh = null;
 		}
 
-		// ── Data packets (one point per path, hidden via zero colour) ────
+		// ── Data packets (instanced green cubes) ────────────────────────
+		this.packetBoxGeo = new THREE.BoxGeometry(
+			NEURAL_CONFIG.packetSize * 0.6,
+			NEURAL_CONFIG.packetSize * 0.6,
+			NEURAL_CONFIG.packetSize * 0.6,
+		);
+		this.packetMat = new THREE.MeshStandardMaterial({
+			color: NEURAL_CONFIG.packetColor,
+			emissive: NEURAL_CONFIG.packetColor,
+			emissiveIntensity: 0.8,
+			metalness: 0.3,
+			roughness: 0.5,
+		});
 		if (this.packets.length > 0) {
-			this.packetPos = new Float32Array(this.packets.length * 3);
-			this.packetColor = new Float32Array(this.packets.length * 3);
+			this.packetMesh = new THREE.InstancedMesh(
+				this.packetBoxGeo,
+				this.packetMat,
+				this.packets.length,
+			);
+			this.packetMesh.frustumCulled = false;
+			// Start all instances hidden (scale 0).
+			_mat4.identity();
+			_scl.setScalar(0);
 			for (let i = 0; i < this.packets.length; i++) {
-				const p = this.packets[i].curve.getPoint(0);
-				this.packetPos[i * 3] = p.x;
-				this.packetPos[i * 3 + 1] = p.y;
-				this.packetPos[i * 3 + 2] = p.z;
+				_mat4.compose(_pt.set(0, 0, 0), _quat.identity(), _scl);
+				this.packetMesh.setMatrixAt(i, _mat4);
 			}
-			this.packetGeo = new THREE.BufferGeometry();
-			this.packetGeo.setAttribute(
-				"position",
-				new THREE.BufferAttribute(this.packetPos, 3).setUsage(THREE.DynamicDrawUsage),
-			);
-			this.packetGeo.setAttribute(
-				"color",
-				new THREE.BufferAttribute(this.packetColor, 3).setUsage(THREE.DynamicDrawUsage),
-			);
-			const packetMat = new THREE.PointsMaterial({
-				map: glowTex,
-				size: NEURAL_CONFIG.packetSize,
-				sizeAttenuation: true,
-				vertexColors: true,
-				blending: THREE.AdditiveBlending,
-				transparent: true,
-				opacity: NEURAL_CONFIG.packetOpacity,
-				depthWrite: false,
-			});
-			this.packetPoints = new THREE.Points(this.packetGeo, packetMat);
-			this.packetPoints.frustumCulled = false;
-			this.group.add(this.packetPoints);
+			this.packetMesh.instanceMatrix.needsUpdate = true;
+			this.group.add(this.packetMesh);
 		} else {
-			this.packetGeo = null;
-			this.packetPos = null;
-			this.packetColor = null;
-			this.packetPoints = null;
+			this.packetMesh = null;
 		}
 
 		// Only the ground layer (guaranteed by the ChunkManager) ever carries a
@@ -463,8 +456,7 @@ class NeuralChunk implements ChunkContent {
 		}
 
 		// ── Data packets firing router → router ──────────────────────────
-		if (this.grown && this.packetGeo && this.packetPos && this.packetColor) {
-			const c = new THREE.Color(NEURAL_CONFIG.packetColor);
+		if (this.grown && this.packetMesh) {
 			for (let i = 0; i < this.packets.length; i++) {
 				const st = this.packets[i];
 				if (st.firing) {
@@ -474,28 +466,29 @@ class NeuralChunk implements ChunkContent {
 						st.gap =
 							NEURAL_CONFIG.packetMinGap +
 							Math.random() * (NEURAL_CONFIG.packetMaxGap - NEURAL_CONFIG.packetMinGap);
-						this.packetColor[i * 3] = 0;
-						this.packetColor[i * 3 + 1] = 0;
-						this.packetColor[i * 3 + 2] = 0;
+						// Hide: scale to 0.
+						_scl.setScalar(0);
+						_pt.set(0, 0, 0);
 					} else {
 						st.curve.getPoint(st.t, _pt);
-						this.packetPos[i * 3] = _pt.x;
-						this.packetPos[i * 3 + 1] = _pt.y;
-						this.packetPos[i * 3 + 2] = _pt.z;
-						this.packetColor[i * 3] = c.r;
-						this.packetColor[i * 3 + 1] = c.g;
-						this.packetColor[i * 3 + 2] = c.b;
+						_scl.setScalar(1);
 					}
 				} else {
 					st.gap -= delta;
 					if (st.gap <= 0) {
 						st.firing = true;
 						st.t = 0;
+						_pt.copy(st.curve.points[0]);
+						_scl.setScalar(1);
+					} else {
+						_scl.setScalar(0);
+						_pt.set(0, 0, 0);
 					}
 				}
+				_mat4.compose(_pt, _quat.identity(), _scl);
+				this.packetMesh.setMatrixAt(i, _mat4);
 			}
-			this.packetGeo.attributes.position.needsUpdate = true;
-			this.packetGeo.attributes.color.needsUpdate = true;
+			this.packetMesh.instanceMatrix.needsUpdate = true;
 		}
 	}
 
@@ -507,11 +500,9 @@ class NeuralChunk implements ChunkContent {
 		this.nodeMat.dispose();
 		this.glowGeo?.dispose();
 		this.glowMat.dispose();
-		if (this.packetGeo) this.packetGeo.dispose();
-		if (this.packetPoints && this.packetPoints.material instanceof THREE.Material) {
-			this.packetPoints.material.dispose();
-		}
-		if (this.nodeMesh) this.nodeMesh.dispose();
+		this.packetBoxGeo.dispose();
+		this.packetMat.dispose();
+		if (this.packetMesh) this.packetMesh.dispose();
 		this.group.clear();
 	}
 }

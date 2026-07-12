@@ -80,7 +80,31 @@ export class LevelState {
     this.tryAdvance();
   }
 
-  /** Mark a station as visited (defaults to the current level). */
+	/**
+	 * Force-advance to the next level, bypassing the chunk + station requirements.
+	 * Used for position-based triggers (e.g. dome exit) that don't use the station
+	 * system. Resets the per-level chunk counter and emits a level-change event.
+	 */
+	forceAdvance(): void {
+		if (this.isFinalLevel) return;
+		this._currentLevel++;
+		this._chunksThisLevel = 0;
+		this.emit();
+	}
+
+	/**
+	 * Jump directly to a specific level (for testing).
+	 * Bypasses all progression requirements.
+	 */
+	jumpToLevel(level: number): void {
+		const clamped = Math.max(0, Math.min(level, this.maxLevel));
+		if (clamped === this._currentLevel) return;
+		this._currentLevel = clamped;
+		this._chunksThisLevel = 0;
+		this.emit();
+	}
+
+	/** Mark a station as visited (defaults to the current level). */
   markStationVisited(level: number = this._currentLevel): void {
     if (level < 0 || level >= this._stationVisited.length) return;
     if (this._stationVisited[level]) return;

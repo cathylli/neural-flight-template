@@ -6,7 +6,9 @@ import { ChunkManager, CHUNK_SIZE } from "./ChunkManager";
 import { LevelState } from "./levelState";
 import { StationManager } from "./stations";
 import { EnvironmentRegistry } from "./environments/registry";
-import { FragmentationEnvironment } from "./environments/fragmentation/FragmentationEnvironment";
+import type { Environment } from "./environments/types";
+import { FirewallEnvironment } from "./environments/firewall/FirewallEnvironment";
+import { CubeStream } from "./CubeStream";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -37,6 +39,7 @@ export interface WFCState extends ExperienceState {
   fade: number;
   fadeTarget: number;
   pendingSwapLevel: number | null;
+  currentEnvironment: Environment;
   /** Scene reference for dynamically adding/removing objects. */
   scene: THREE.Scene;
   // Network (L1) settings
@@ -64,6 +67,12 @@ export interface WFCState extends ExperienceState {
   gridSize: number;
   cellSize: number;
   _needsRebuild?: boolean;
+  /** Set once when the L3 dome exit fires, so it only triggers once. */
+  _domeExitTriggered: boolean;
+  /** Timer for L2 time-based transition. */
+  _l2Timer: number;
+  /** Green cubes that converge on the dome in L3 and turn red. */
+  cubeStream: CubeStream;
 }
 
 /** Duration (seconds) of the neon color cross-fade on a level change. */
@@ -110,6 +119,8 @@ function updateFade(s: WFCState, delta: number): void {
     // Swap to this level's environment (its own tiles / materials / look) and
     // force a full regeneration behind the black screen.
     const env = s.environments.forLevel(level, new THREE.Color(s.neonColor));
+    env.init?.(s.scene);
+    s.currentEnvironment = env;
     s.chunkManager.setEnvironment(env, {
       buildingDensity: s.buildingDensity,
       traceComplexity: s.traceComplexity,
@@ -255,19 +266,12 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   const stationManager = new StationManager(ctx.scene);
   stationManager.onVisit = (level) => levelState.markStationVisited(level);
   stationManager.onStationPlaced = (pos, level) => {
-    if (level === 0) {
-      // Tell the test cube where the beacon is so its particles fly toward it.
+    if (level === 1) {
       state.testCubeTarget.copy(pos);
       state.testCubeTarget.y += 20;
     }
-    if (level === 2) {
-      // Tell the fragmentation environment where its beacon is so particles
-      // from exploding cubes home toward it.
-      const env = environments.forLevel(2, new THREE.Color("#ff6600"));
-      if (env instanceof FragmentationEnvironment) {
-        env.stationTarget.copy(pos);
-        env.stationTarget.y += 25;
-      }
+    if (level === 4) {
+      state.cubeStream.setDomePosition(pos);
     }
   };
 
@@ -275,6 +279,10 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   // circuit environment; the manager swaps the active one on a level change.
   const environments = new EnvironmentRegistry();
   const environment = environments.forLevel(0, new THREE.Color(neonColorStr));
+  environment.init?.(ctx.scene);
+
+  // CubeStream — green cubes that converge on the dome in L3 and turn red.
+  const cubeStream = new CubeStream(ctx.scene);
 
   // Chunk manager — generic streaming driver around the player. Every newly
   // explored chunk feeds the level-progression counter, and the station manager
@@ -300,6 +308,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     camera: player.camera,
     chunkManager,
     environments,
+    currentEnvironment: environment,
     levelState,
     stationManager,
     ground,
@@ -341,6 +350,9 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     },
     gridSize: 20,
     cellSize: 4,
+    _domeExitTriggered: false,
+    _l2Timer: 0,
+    cubeStream,
   };
 
   // Flight collision surface: the higher of the ground plane and the active
@@ -349,9 +361,6 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   player.heightSampler = (x, z) => {
     const terrainY =
       chunkManager.terrainHeightAt(x, z, state.terrainLevel) ?? -Infinity;
-    // A volumetric environment (e.g. the neural network) has no floor — the
-    // player flies through it in all directions — so the ground plane drops out
-    // of the clamp and only the environment's own terrain (if any) applies.
     const floorY = chunkManager.hasGroundFloor() ? ground.position.y : -Infinity;
     return Math.max(floorY, terrainY);
   };
@@ -372,6 +381,27 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     startColorTransition(state, new THREE.Color(snap.tileSet.neonColor));
     // The new level's station becomes eligible to spawn.
     stationManager.setLevel(snap.currentLevel);
+    // Adjust flight speed per level.
+    const speeds = [10, 10, 12, 10, 4, 10, 8, 6]; // L2 fast through tunnel, L4 slow inside firewall, L6 moderate, L7 slow drift
+    const speed = speeds[snap.currentLevel] ?? 10;
+    state.player.baseSpeed = speed;
+    // Ground color: dark red inside the firewall, default otherwise.
+    const gmat = state.ground.material as THREE.MeshStandardMaterial;
+    if (snap.currentLevel === 4) {
+      gmat.color.set(0x1a0505);
+      // Teleport player to dome center so they don't spawn at the wall.
+      state.player.rig.position.set(0, 3, 0);
+    } else {
+      gmat.color.set(0x0d0510);
+    }
+    // Reset dome exit flag when leaving L4 so a restart works cleanly.
+    if (snap.currentLevel !== 4) {
+      state._domeExitTriggered = false;
+    }
+    // Reset cube stream when leaving L3.
+    if (snap.currentLevel !== 3) {
+      state.cubeStream.reset();
+    }
   });
 
   return state;
@@ -387,6 +417,7 @@ export function tick(
   s.elapsed += ctx.delta;
 
   s.player.tick(ctx.delta);
+  s.currentEnvironment.tick?.(ctx.delta, s.player.rig.position);
 
   // Drive the black fade + perform the environment swap at full black.
   updateFade(s, ctx.delta);
@@ -417,6 +448,33 @@ export function tick(
 
   // Station trigger volumes + per-frame station animation
   s.stationManager.update(playerPos, s.elapsed, ctx.delta);
+
+  // CubeStream — green cubes converging on the dome in L3
+  s.cubeStream.update(ctx.delta, playerPos);
+
+  // ── Dome exit trigger (L4 → L5) ─────────────────────────────────
+  if (
+    s.terrainLevel === 4 &&
+    !s._domeExitTriggered &&
+    s.currentEnvironment instanceof FirewallEnvironment
+  ) {
+    const dist = playerPos.distanceTo(s.currentEnvironment.domeCenter);
+    if (dist > s.currentEnvironment.domeRadius) {
+      s._domeExitTriggered = true;
+      s.levelState.forceAdvance();
+    }
+  }
+
+  // ── L2 time-based trigger (30s → L3) ──────────────────────────
+  if (s.terrainLevel === 2) {
+    s._l2Timer += ctx.delta;
+    if (s._l2Timer >= 30) {
+      s._l2Timer = 0;
+      s.levelState.forceAdvance();
+    }
+  } else {
+    s._l2Timer = 0;
+  }
 
   // ── Test cube fly-in ───────────────────────────────────────────────
   if (s.testCube && !s.testCubeExploded && s.elapsed < s.testCubeFlyDuration) {
@@ -521,11 +579,22 @@ export function tick(
   }
 
   // Keep the ground centered under the player so it always covers the view.
-  // Hidden entirely for volumetric environments, which have no floor and would
-  // otherwise show an opaque plane cutting through the 3D network.
-  s.ground.visible = s.chunkManager.hasGroundFloor();
+  // Hidden for volumetric environments and L6 (drain has its own floor tiles).
+  s.ground.visible = s.chunkManager.hasGroundFloor() && s.terrainLevel !== 6;
   s.ground.position.x = playerPos.x;
   s.ground.position.z = playerPos.z;
+
+  // Ground color + speed follow the L4 red→green transition.
+  if (s.terrainLevel === 4 && s.currentEnvironment instanceof FirewallEnvironment) {
+    const t = s.currentEnvironment.colorProgress;
+    const gmat = s.ground.material as THREE.MeshStandardMaterial;
+    const r = 0.10 * (1 - t) + 0.05 * t;
+    const g = 0.02 * (1 - t) + 0.12 * t;
+    const b = 0.02 * (1 - t) + 0.05 * t;
+    gmat.color.setRGB(r, g, b);
+    // Restore normal flight speed once fully green.
+    if (t >= 1) s.player.baseSpeed = 10;
+  }
 
   return { state: s };
 }
@@ -538,6 +607,7 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   s.chunkManager.dispose();
   s.environments.dispose();
   s.stationManager.dispose();
+  s.cubeStream.dispose();
 
   s.fadeMesh.removeFromParent();
   s.fadeMesh.geometry.dispose();

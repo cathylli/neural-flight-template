@@ -6,6 +6,7 @@ import {
 	terrainCollisionHeight,
 	terrainRisesAboveBoard,
 } from "../../terrain";
+import { getTerrainAmplitude } from "../../config";
 import { CHUNK_SIZE } from "../types";
 import type {
 	ChunkContent,
@@ -742,17 +743,20 @@ class CircuitChunk implements ChunkContent {
 		// ── Terrain overlay: continuous heightfield over the board ─────────────
 		// Sampled from this chunk's world origin so the surface stays seamless
 		// across chunk boundaries. Added to the group → shares the chunk's
-		// load/dispose lifecycle automatically.
-		const terrain = buildTerrainMesh(
-			this.group.position.x,
-			this.group.position.z,
-			CHUNK_SIZE,
-			m.terrain,
-			terrainLevel,
-		);
-		setTerrainGrowth(terrain, 0); // start flat; update() grows it in like the buildings
-		this.terrainMesh = terrain;
-		this.group.add(terrain);
+		// load/dispose lifecycle automatically. Skip when amplitude is 0.
+		const terrainAmp = getTerrainAmplitude(terrainLevel, 0);
+		if (terrainAmp > 0) {
+			const terrain = buildTerrainMesh(
+				this.group.position.x,
+				this.group.position.z,
+				CHUNK_SIZE,
+				m.terrain,
+				terrainLevel,
+			);
+			setTerrainGrowth(terrain, 0); // start flat; update() grows it in like the buildings
+			this.terrainMesh = terrain;
+			this.group.add(terrain);
+		}
 
 		return stationSlot;
 	}

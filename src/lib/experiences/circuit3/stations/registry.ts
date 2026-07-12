@@ -1,6 +1,9 @@
 import { BeaconStation } from "./BeaconStation";
-import { CubeStation } from "./CubeStation";
-import { ParticleStation } from "./ParticleStation";
+import { BrainStation } from "./BrainStation";
+import { DomeStation } from "./DomeStation";
+import { NullStation } from "./NullStation";
+import { RouterStation } from "./RouterStation";
+import { SphereStation } from "./SphereStation";
 import type { StationContext, StationFactory, StationVisual } from "./types";
 
 // ── Station Registry ─────────────────────────────────────────────────────────
@@ -11,10 +14,14 @@ import type { StationContext, StationFactory, StationVisual } from "./types";
 
 /** level index → factory building that level's station visual. */
 const STATION_FACTORIES: StationFactory[] = [
-  (ctx) => new CubeStation(ctx),     // L0 — clean data room
-  (ctx) => new BeaconStation(ctx),   // L1 — empty void (beacon only, cube is separate)
-  (ctx) => new ParticleStation(ctx), // L2 — router network
-  (ctx) => new CubeStation(ctx),     // L3 — server farm / brain
+  (ctx) => new RouterStation(ctx),  // L0 — green mesh router
+  (ctx) => new SphereStation(ctx),  // L1 — green sphere (neural routing net)
+  ()   => new NullStation(),        // L2 — time-based (30s → L3)
+  (ctx) => new DomeStation(ctx),   // L3 — white data room (circuit board variant) + firewall dome
+  ()   => new NullStation(),        // L4 — no station (dome exit triggers the transition)
+  (ctx) => new BeaconStation(ctx),  // L5 — green data room → visit to advance to drain
+  (ctx) => new BrainStation(ctx),   // L6 — the brain → advance to particle network
+  ()   => new NullStation(),        // L7 — final level (particle network)
 ];
 
 /**

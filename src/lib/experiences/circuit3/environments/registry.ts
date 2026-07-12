@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import { CircuitEnvironment } from "./circuit/CircuitEnvironment";
-import { FragmentationEnvironment } from "./fragmentation/FragmentationEnvironment";
-import { NetworkEnvironment } from "./network/NetworkEnvironment";
 import { NeuralEnvironment } from "./neural/NeuralEnvironment";
+import { FiberTunnelEnvironment } from "./fiber/FiberTunnelEnvironment";
+import { FirewallEnvironment } from "./firewall/FirewallEnvironment";
+import { DrainEnvironment } from "./drain/DrainEnvironment";
+import { ParticleNetworkEnvironment } from "./particle-network/ParticleNetworkEnvironment";
 import type { Environment } from "./types";
 
 // ── Environment Registry ──────────────────────────────────────────────────────
@@ -24,10 +26,14 @@ import type { Environment } from "./types";
 type EnvironmentFactory = (neonColor: THREE.Color) => Environment;
 
 const ENVIRONMENT_FACTORIES: EnvironmentFactory[] = [
-	(c) => new CircuitEnvironment(c),      // L0 — clean data room
-	()  => new NeuralEnvironment(),        // L1 — infinite 3D neural routing net
-	()  => new NetworkEnvironment(),       // L2 — particle network
-	(c) => new CircuitEnvironment(c),      // L3 — server farm / brain
+	(c) => new CircuitEnvironment(c),    // L0 — clean data room
+	()  => new NeuralEnvironment(),      // L1 — infinite 3D routing net
+	()  => new FiberTunnelEnvironment(), // L2 — fiber optic highway (psychedelic light tunnel)
+	(c) => new CircuitEnvironment(c),    // L3 — white data room (circuit board variant) + firewall dome
+	()  => new FirewallEnvironment(),    // L4 — inside the firewall (red data field)
+	(c) => new CircuitEnvironment(c),    // L5 — green data room (escaped the firewall)
+	()  => new DrainEnvironment(),       // L6 — grid floor with drain holes
+	()  => new ParticleNetworkEnvironment(), // L7 — particle network (drawrange volumetric)
 ];
 
 /**

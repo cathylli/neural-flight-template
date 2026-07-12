@@ -140,7 +140,7 @@ export function sampleTerrainHeight(
 	const amp = getTerrainAmplitude(level, chunkDistance);
 	const hill = Math.max(baseShape(wx, wz), 0);
 	const crag = rockDetail(wx, wz) * ROCK_STRENGTH;
-	return hill * (1 + crag) * amp + detailNoise(wx, wz) * MICRO_AMP * hill;
+	return hill * (1 + crag) * amp + detailNoise(wx, wz) * MICRO_AMP * hill * amp;
 }
 
 /**
