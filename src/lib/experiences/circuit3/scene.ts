@@ -8,7 +8,6 @@ import { StationManager } from "./stations";
 import { EnvironmentRegistry } from "./environments/registry";
 import type { Environment } from "./environments/types";
 import { FirewallEnvironment } from "./environments/firewall/FirewallEnvironment";
-import { CubeStream } from "./CubeStream";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -20,6 +19,8 @@ export interface WFCState extends ExperienceState {
   levelState: LevelState;
   stationManager: StationManager;
   ground: THREE.Mesh;
+  ambientLight: THREE.AmbientLight;
+  dirLight: THREE.DirectionalLight;
   elapsed: number;
   // Settings exposed for applySettings / manifest
   moveSpeed: number;
@@ -71,8 +72,6 @@ export interface WFCState extends ExperienceState {
   _domeExitTriggered: boolean;
   /** Timer for L2 time-based transition. */
   _l2Timer: number;
-  /** Green cubes that converge on the dome in L3 and turn red. */
-  cubeStream: CubeStream;
 }
 
 /** Duration (seconds) of the neon color cross-fade on a level change. */
@@ -116,6 +115,9 @@ function updateFade(s: WFCState, delta: number): void {
   if (s.pendingSwapLevel !== null && s.fade >= 1) {
     const level = s.pendingSwapLevel;
     s.pendingSwapLevel = null;
+    // Dispose the old environment so scene-level objects (e.g. firewall dome)
+    // are removed before the new one takes over.
+    s.currentEnvironment.dispose?.();
     // Swap to this level's environment (its own tiles / materials / look) and
     // force a full regeneration behind the black screen.
     const env = s.environments.forLevel(level, new THREE.Color(s.neonColor));
@@ -163,7 +165,8 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   ctx.scene.add(ground);
 
   // Lights
-  ctx.scene.add(new THREE.AmbientLight(0xffffff, 0.2));
+  const ambient = new THREE.AmbientLight(0xffffff, 0.2);
+  ctx.scene.add(ambient);
   const dir = new THREE.DirectionalLight(0x4444ff, 0.3);
   dir.position.set(0, 100, 0);
   ctx.scene.add(dir);
@@ -270,9 +273,6 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
       state.testCubeTarget.copy(pos);
       state.testCubeTarget.y += 20;
     }
-    if (level === 4) {
-      state.cubeStream.setDomePosition(pos);
-    }
   };
 
   // Environments — one per level, cached (see registry.ts). Level 0 uses the
@@ -280,9 +280,6 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   const environments = new EnvironmentRegistry();
   const environment = environments.forLevel(0, new THREE.Color(neonColorStr));
   environment.init?.(ctx.scene);
-
-  // CubeStream — green cubes that converge on the dome in L3 and turn red.
-  const cubeStream = new CubeStream(ctx.scene);
 
   // Chunk manager — generic streaming driver around the player. Every newly
   // explored chunk feeds the level-progression counter, and the station manager
@@ -312,6 +309,8 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     levelState,
     stationManager,
     ground,
+    ambientLight: ambient,
+    dirLight: dir,
     scene: ctx.scene,
     elapsed: 0,
     moveSpeed: 8,
@@ -352,7 +351,6 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     cellSize: 4,
     _domeExitTriggered: false,
     _l2Timer: 0,
-    cubeStream,
   };
 
   // Flight collision surface: the higher of the ground plane and the active
@@ -374,15 +372,18 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     state.traceComplexity = snap.tileSet.traceComplexity;
     state.neonColor = snap.tileSet.neonColor;
     state.terrainLevel = snap.currentLevel;
-    // Begin the fade-out; the actual environment swap happens at full black.
+    // Begin the fade-out; the actual environment swap happens at full opacity.
     state.pendingSwapLevel = snap.currentLevel;
     state.fadeTarget = 1;
+    // Per-level transition color: L2→L3 white flash, L3→L4 red, rest black.
+    const fadeColors: Record<number, number> = { 3: 0xffffff, 4: 0xff2222 };
+    state.fadeMaterial.color.set(fadeColors[snap.currentLevel] ?? 0x000000);
     // Cross-fade the neon color over time as well.
     startColorTransition(state, new THREE.Color(snap.tileSet.neonColor));
     // The new level's station becomes eligible to spawn.
     stationManager.setLevel(snap.currentLevel);
     // Adjust flight speed per level.
-    const speeds = [10, 10, 12, 10, 4, 10, 8, 6]; // L2 fast through tunnel, L4 slow inside firewall, L6 moderate, L7 slow drift
+    const speeds = [10, 10, 12, 10, 4, 8, 6]; // L2 fast through tunnel, L4 slow inside firewall, L5 moderate, L6 slow drift
     const speed = speeds[snap.currentLevel] ?? 10;
     state.player.baseSpeed = speed;
     // Ground color: dark red inside the firewall, default otherwise.
@@ -398,9 +399,13 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     if (snap.currentLevel !== 4) {
       state._domeExitTriggered = false;
     }
-    // Reset cube stream when leaving L3.
-    if (snap.currentLevel !== 3) {
-      state.cubeStream.reset();
+    // Hide test cube + particles when leaving L0.
+    if (snap.currentLevel !== 0) {
+      if (state.testCube) state.testCube.visible = false;
+      if (state.testCubeEdges) state.testCubeEdges.visible = false;
+      for (const mesh of state.testParticles.meshes) {
+        mesh.visible = false;
+      }
     }
   });
 
@@ -448,9 +453,6 @@ export function tick(
 
   // Station trigger volumes + per-frame station animation
   s.stationManager.update(playerPos, s.elapsed, ctx.delta);
-
-  // CubeStream — green cubes converging on the dome in L3
-  s.cubeStream.update(ctx.delta, playerPos);
 
   // ── Dome exit trigger (L4 → L5) ─────────────────────────────────
   if (
@@ -579,8 +581,8 @@ export function tick(
   }
 
   // Keep the ground centered under the player so it always covers the view.
-  // Hidden for volumetric environments and L6 (drain has its own floor tiles).
-  s.ground.visible = s.chunkManager.hasGroundFloor() && s.terrainLevel !== 6;
+  // Hidden for volumetric environments and L5 (drain has its own floor tiles).
+  s.ground.visible = s.chunkManager.hasGroundFloor() && s.terrainLevel !== 5;
   s.ground.position.x = playerPos.x;
   s.ground.position.z = playerPos.z;
 
@@ -607,7 +609,9 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   s.chunkManager.dispose();
   s.environments.dispose();
   s.stationManager.dispose();
-  s.cubeStream.dispose();
+
+  scene.remove(s.ambientLight);
+  scene.remove(s.dirLight);
 
   s.fadeMesh.removeFromParent();
   s.fadeMesh.geometry.dispose();
