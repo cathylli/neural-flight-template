@@ -188,6 +188,12 @@ export class StationManager implements StationSpawnPolicy {
     // Hold the new station back until the player has flown this level's chunk
     // threshold — same number that gates the level advance (LEVEL_THRESHOLDS).
     this.spawnDelayRemaining = stationSpawnDelayForLevel(level);
+    // Clean up any active (unvisited) station from the previous level so it
+    // doesn't remain visible during the fade/swap.
+    if (this.active) {
+      this.removeVisual(this.active.visual);
+      this.active = null;
+    }
   }
 
   /**

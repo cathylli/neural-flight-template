@@ -168,6 +168,8 @@ export class FirewallEnvironment implements Environment {
 			return;
 		}
 		this.scene = scene;
+		this.elapsed = 0;
+		this.colorT = 0;
 		this.circuitEnv = new CircuitEnvironment(new THREE.Color(RED));
 		this.nextFlashTime = 2;
 		this.buildDomeShell();
@@ -268,6 +270,11 @@ export class FirewallEnvironment implements Environment {
 	}
 
 	dispose(): void {
+		if (this.domeMesh && this.scene) {
+			this.scene.remove(this.domeMesh);
+			this.domeMesh.geometry.dispose();
+			this.domeMesh = null;
+		}
 		if (this.domeMat) { this.domeMat.dispose(); this.domeMat = null; }
 		if (this.nodeMat) { this.nodeMat.dispose(); this.nodeMat = null; }
 		if (this.lineGeo) { this.lineGeo.dispose(); this.lineGeo = null; }
@@ -288,6 +295,13 @@ export class FirewallEnvironment implements Environment {
 			this.lightningLight = null;
 		}
 		this.circuitEnv?.dispose();
+		this.circuitEnv = null;
+		this.edges = [];
+		this.nodePositions = null;
+		this.nodePulsePhases = null;
+		this.edgeDistances = null;
+		this.energyPhases = null;
+		this.scene = null;
 	}
 
 	// ── Dome shell (very transparent backdrop) ──────────────────────────

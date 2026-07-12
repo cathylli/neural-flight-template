@@ -32,7 +32,7 @@
  * — the counter restarts on every level change). The same value feeds the
  * station spawn delay in stations.ts, so station and threshold stay in lock-step.
  */
-export const LEVEL_THRESHOLDS: number[] = [8, 6, 8, 8, 8, 8, 8, 8];
+export const LEVEL_THRESHOLDS: number[] = [8, 6, 8, 8, 8, 8, 8];
 
 /** Per-level generation parameters fed to the ChunkManager on a level change. */
 export interface LevelTileSet {
@@ -55,11 +55,9 @@ export const LEVEL_TILE_SETS: LevelTileSet[] = [
 	{ buildingDensity: 0.3, traceComplexity: 0.6, neonColor: "#ffffff" },
 	// L4 — inside the firewall (red data field)
 	{ buildingDensity: 0.3, traceComplexity: 0.6, neonColor: "#ff2222" },
-	// L5 — green data room (escaped the firewall)
-	{ buildingDensity: 0.3, traceComplexity: 0.6, neonColor: "#22ff44" },
-	// L6 — grid floor with drain holes
+	// L5 — grid floor with drain holes
 	{ buildingDensity: 0,   traceComplexity: 0,   neonColor: "#00aaff" },
-	// L7 — particle network (drawrange volumetric)
+	// L6 — particle network (drawrange volumetric)
 	{ buildingDensity: 0,   traceComplexity: 0,   neonColor: "#ffffff" },
 ];
 
@@ -82,7 +80,7 @@ export const LEVEL_TILE_SETS: LevelTileSet[] = [
  *   L1, L2…  : each level a notch higher.
  * Add/extend entries if more levels are introduced (see LEVEL_TILE_SETS).
  */
-const TERRAIN_LEVEL_AMPLITUDE: number[] = [0, 0, 0, 0, 0, 0, 0, 0];
+const TERRAIN_LEVEL_AMPLITUDE: number[] = [0, 0, 0, 0, 0, 0, 0];
 
 /** On the final level only, extra amplitude added per chunk of distance flown. */
 const TERRAIN_FINAL_DISTANCE_GAIN = 2.5;

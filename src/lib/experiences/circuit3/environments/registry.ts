@@ -31,9 +31,8 @@ const ENVIRONMENT_FACTORIES: EnvironmentFactory[] = [
 	()  => new FiberTunnelEnvironment(), // L2 — fiber optic highway (psychedelic light tunnel)
 	(c) => new CircuitEnvironment(c),    // L3 — white data room (circuit board variant) + firewall dome
 	()  => new FirewallEnvironment(),    // L4 — inside the firewall (red data field)
-	(c) => new CircuitEnvironment(c),    // L5 — green data room (escaped the firewall)
-	()  => new DrainEnvironment(),       // L6 — grid floor with drain holes
-	()  => new ParticleNetworkEnvironment(), // L7 — particle network (drawrange volumetric)
+	()  => new DrainEnvironment(),       // L5 — grid floor with drain holes
+	()  => new ParticleNetworkEnvironment(), // L6 — particle network (drawrange volumetric)
 ];
 
 /**

@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { buildBeacon } from "./beacon";
 import type { StationContext, StationVisual } from "./types";
 
 const ROUTER_SCALE = 600;
@@ -12,6 +11,7 @@ const GLTF_PATH = "/models/router.glb";
 const GREEN = new THREE.Color(0x00ff66);
 
 export class RouterStation implements StationVisual {
+  static readonly TRIGGER_RADIUS = 80;
   readonly object = new THREE.Group();
   private readonly pivot: THREE.Group;
   private readonly baseY: number;
@@ -21,9 +21,6 @@ export class RouterStation implements StationVisual {
   private readonly wires: THREE.LineSegments[] = [];
 
   constructor(ctx: StationContext) {
-    const beacon = buildBeacon(ctx);
-    this.object.add(beacon.object);
-
     this.pivot = new THREE.Group();
     this.baseY = 60;
     this.pivot.position.set(ctx.position.x, this.baseY, ctx.position.z);

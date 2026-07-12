@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { loadGLTF } from "$lib/three/loader";
-import { buildBeacon } from "./beacon";
 import type { StationContext, StationVisual } from "./types";
 
 const BRAIN_SCALE = 1;
@@ -20,9 +19,6 @@ export class BrainStation implements StationVisual {
   private readonly wires: THREE.LineSegments[] = [];
 
   constructor(ctx: StationContext) {
-    const beacon = buildBeacon(ctx);
-    this.object.add(beacon.object);
-
     this.pivot = new THREE.Group();
     this.pivot.position.set(ctx.position.x, this.baseY, ctx.position.z);
     this.object.add(this.pivot);

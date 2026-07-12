@@ -1,5 +1,5 @@
-import { BeaconStation } from "./BeaconStation";
 import { BrainStation } from "./BrainStation";
+import { ComputerStation } from "./ComputerStation";
 import { DomeStation } from "./DomeStation";
 import { NullStation } from "./NullStation";
 import { RouterStation } from "./RouterStation";
@@ -19,9 +19,8 @@ const STATION_FACTORIES: StationFactory[] = [
   ()   => new NullStation(),        // L2 — time-based (30s → L3)
   (ctx) => new DomeStation(ctx),   // L3 — white data room (circuit board variant) + firewall dome
   ()   => new NullStation(),        // L4 — no station (dome exit triggers the transition)
-  (ctx) => new BeaconStation(ctx),  // L5 — green data room → visit to advance to drain
-  (ctx) => new BrainStation(ctx),   // L6 — the brain → advance to particle network
-  ()   => new NullStation(),        // L7 — final level (particle network)
+  (ctx) => new BrainStation(ctx),   // L5 — the brain → advance to particle network
+  (ctx) => new ComputerStation(ctx), // L6 — final level (particle network)
 ];
 
 /**

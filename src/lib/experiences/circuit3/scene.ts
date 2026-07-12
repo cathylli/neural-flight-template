@@ -72,6 +72,11 @@ export interface WFCState extends ExperienceState {
   _domeExitTriggered: boolean;
   /** Timer for L2 time-based transition. */
   _l2Timer: number;
+  // Audio
+  audioListener: THREE.AudioListener;
+  bgMusic: THREE.Audio<AudioNode>;
+  narrationAudios: THREE.Audio<AudioNode>[];
+  currentNarration: number;
 }
 
 /** Duration (seconds) of the neon color cross-fade on a level change. */
@@ -260,6 +265,56 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   fadeMesh.visible = false;
   player.camera.add(fadeMesh);
 
+  // ── Audio ────────────────────────────────────────────────────────────────
+  const audioListener = new THREE.AudioListener();
+  player.camera.add(audioListener);
+  const audioLoader = new THREE.AudioLoader();
+
+  // Background music — loops forever
+  let bgMusic: THREE.Audio<AudioNode> | null = null;
+  try {
+    const bgBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+      audioLoader.load("/Audio/bg.mp3", resolve, undefined, reject);
+    });
+    bgMusic = new THREE.Audio(audioListener);
+    bgMusic.setBuffer(bgBuffer);
+    bgMusic.setLoop(true);
+    bgMusic.setVolume(0.3);
+    bgMusic.play();
+  } catch {
+    console.warn("Background audio not loaded — place static/Audio/bg.mp3");
+  }
+
+  // Per-level narration — one track per level, plays on level change
+  const narrationAudios: THREE.Audio<AudioNode>[] = [];
+  const LEVEL_COUNT = 7;
+  for (let i = 0; i < LEVEL_COUNT; i++) {
+    try {
+      const buf = await new Promise<AudioBuffer>((resolve, reject) => {
+        audioLoader.load(
+          `/Audio/${String(i + 1).padStart(2, "0")}.mp3`,
+          resolve,
+          undefined,
+          reject,
+        );
+      });
+      const audio = new THREE.Audio(audioListener);
+      audio.setBuffer(buf);
+      audio.setLoop(false);
+      audio.setVolume(0.8);
+      narrationAudios.push(audio);
+    } catch {
+      console.warn(`Narration audio not loaded — place static/Audio/${String(i + 1).padStart(2, "0")}.mp3`);
+      narrationAudios.push(null as unknown as THREE.Audio<AudioNode>);
+    }
+  }
+
+  // Play L0 narration immediately
+  let currentNarration = 0;
+  if (narrationAudios[0]) {
+    narrationAudios[0].play();
+  }
+
   // Level progression — tracks chunks flown + stations visited, advances
   // the world through its three narrative levels.
   const levelState = new LevelState();
@@ -351,6 +406,10 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     cellSize: 4,
     _domeExitTriggered: false,
     _l2Timer: 0,
+    audioListener,
+    bgMusic: bgMusic as unknown as THREE.Audio<AudioNode>,
+    narrationAudios,
+    currentNarration,
   };
 
   // Flight collision surface: the higher of the ground plane and the active
@@ -407,6 +466,12 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
         mesh.visible = false;
       }
     }
+    // Switch narration to the new level's track
+    const prev = state.narrationAudios[state.currentNarration];
+    if (prev && prev.isPlaying) prev.stop();
+    state.currentNarration = snap.currentLevel;
+    const next = state.narrationAudios[snap.currentLevel];
+    if (next) next.play();
   });
 
   return state;
@@ -616,6 +681,13 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   s.fadeMesh.removeFromParent();
   s.fadeMesh.geometry.dispose();
   s.fadeMaterial.dispose();
+
+  // Stop all audio
+  if (s.bgMusic && s.bgMusic.isPlaying) s.bgMusic.stop();
+  for (const audio of s.narrationAudios) {
+    if (audio && audio.isPlaying) audio.stop();
+  }
+  s.audioListener.parent?.remove(s.audioListener);
 
   if (s.testCube) {
     s.testCube.geometry.dispose();
