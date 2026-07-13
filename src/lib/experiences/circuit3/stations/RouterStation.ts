@@ -12,6 +12,7 @@ const GREEN = new THREE.Color(0x00ff66);
 
 export class RouterStation implements StationVisual {
   static readonly TRIGGER_RADIUS = 80;
+  static readonly TRIGGER_RADIUS_Y = 160;
   readonly object = new THREE.Group();
   private readonly pivot: THREE.Group;
   private readonly baseY: number;

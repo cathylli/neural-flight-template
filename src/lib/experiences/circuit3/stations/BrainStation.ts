@@ -10,6 +10,7 @@ const GLTF_PATH = "/models/the_brain.glb";
 
 export class BrainStation implements StationVisual {
 	static readonly TRIGGER_RADIUS = 120;
+	static readonly TRIGGER_RADIUS_Y = 240;
   readonly object = new THREE.Group();
   private readonly pivot: THREE.Group;
   private loaded = false;

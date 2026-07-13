@@ -78,6 +78,7 @@ interface ActiveStation {
   cz: number;
   center: THREE.Vector3;
   radiusSq: number;
+  radiusYSq: number;
   visual: StationVisual;
 }
 
@@ -147,12 +148,17 @@ export class StationManager implements StationSpawnPolicy {
       typeof visualCtor.TRIGGER_RADIUS === "number"
         ? visualCtor.TRIGGER_RADIUS
         : TRIGGER_RADIUS;
+    const radiusY =
+      typeof visualCtor.TRIGGER_RADIUS_Y === "number"
+        ? visualCtor.TRIGGER_RADIUS_Y
+        : radius;
     this.active = {
       level,
       cx,
       cz,
       center: worldPos.clone(),
       radiusSq: radius * radius,
+      radiusYSq: radiusY * radiusY,
       visual,
     };
     this.onStationPlaced?.(worldPos, level);
@@ -213,7 +219,13 @@ export class StationManager implements StationSpawnPolicy {
   update(playerPos: THREE.Vector3, elapsed: number, delta: number): void {
     for (const visual of this.visuals) visual.update?.(elapsed);
 
-    if (this.active && playerPos.distanceToSquared(this.active.center) <= this.active.radiusSq) {
+    if (this.active) {
+      const dx = playerPos.x - this.active.center.x;
+      const dy = playerPos.y - this.active.center.y;
+      const dz = playerPos.z - this.active.center.z;
+      // Ellipsoidal trigger: same radius in X/Z, larger in Y
+      const distElliptical = dx * dx + dz * dz + (dy * dy * this.active.radiusSq) / this.active.radiusYSq;
+      if (distElliptical <= this.active.radiusSq) {
       const visited = this.active;
 
       // Trigger the visual's shatter effect and take ownership of particles
@@ -230,6 +242,7 @@ export class StationManager implements StationSpawnPolicy {
       this.visitedStations.push(visited);
       this.active = null;
       this.onVisit?.(visited.level);
+      }
     }
 
     // Tick transit particles (exploding → floating debris)
