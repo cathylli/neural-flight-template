@@ -10,6 +10,8 @@ import type { Environment } from "./environments/types";
 import { FirewallEnvironment } from "./environments/firewall/FirewallEnvironment";
 import { StartSequence } from "./start-sequence";
 
+const DOME_PARTICLE_COUNT = 120;
+
 // ── State ──────────────────────────────────────────────────────────────────
 
 export interface WFCState extends ExperienceState {
@@ -58,7 +60,20 @@ export interface WFCState extends ExperienceState {
   testCubeFlyTo: THREE.Vector3;
   testCubeFlyDuration: number;
   testCubeTarget: THREE.Vector3;
+  gameStartTime: number;
+  routerSeen: boolean;
   testParticles: {
+    meshes: THREE.Mesh[];
+    velocities: THREE.Vector3[];
+    lifetimes: Float32Array;
+    maxLifetimes: Float32Array;
+    blinkPhases: Float32Array;
+  };
+  domeTarget: THREE.Vector3;
+  domeSeen: boolean;
+  domeSpawned: boolean;
+  domeGatherProgress: number;
+  domeParticles: {
     meshes: THREE.Mesh[];
     velocities: THREE.Vector3[];
     lifetimes: Float32Array;
@@ -283,6 +298,32 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     testParticleMeshes.push(mesh);
   }
 
+  // Pre-allocate dome particles (L3 — white cubes flying to dome)
+  const domeParticleVelocities: THREE.Vector3[] = [];
+  const domeParticleLifetimes = new Float32Array(DOME_PARTICLE_COUNT);
+  const domeParticleMaxLifetimes = new Float32Array(DOME_PARTICLE_COUNT);
+  const domeParticleMeshes: THREE.Mesh[] = [];
+  const domeParticleBlinkPhases = new Float32Array(DOME_PARTICLE_COUNT);
+  const domeParticleMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0xffffff,
+    emissiveIntensity: 1,
+  });
+  const domeParticleGeo = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+  for (let i = 0; i < DOME_PARTICLE_COUNT; i++) {
+    domeParticleVelocities.push(new THREE.Vector3(0, 0, 0));
+    domeParticleLifetimes[i] = 0;
+    domeParticleMaxLifetimes[i] = 1;
+    domeParticleBlinkPhases[i] = Math.random() * Math.PI * 2;
+    const mesh = new THREE.Mesh(
+      domeParticleGeo.clone(),
+      domeParticleMat.clone(),
+    );
+    mesh.visible = false;
+    ctx.scene.add(mesh);
+    domeParticleMeshes.push(mesh);
+  }
+
   // Player
   const player = new FlightPlayer({
     fov: CAMERA.FOV,
@@ -382,9 +423,15 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   const stationManager = new StationManager(ctx.scene);
   stationManager.onVisit = (level) => levelState.markStationVisited(level);
   stationManager.onStationPlaced = (pos, level) => {
-    if (level === 1) {
+    if (level === 0 || level === 1) {
       state.testCubeTarget.copy(pos);
       state.testCubeTarget.y += 20;
+      state.routerSeen = true;
+    }
+    if (level === 3) {
+      state.domeTarget.copy(pos);
+      state.domeTarget.y += 20;
+      state.domeSeen = true;
     }
   };
 
@@ -453,12 +500,25 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     testCubeFlyTo: new THREE.Vector3(0, 20, -150),
     testCubeFlyDuration: 6,
     testCubeTarget: new THREE.Vector3(0, 20, -250),
+    gameStartTime: 0,
+    routerSeen: false,
     testParticles: {
       meshes: testParticleMeshes,
       velocities: testParticleVelocities,
       lifetimes: testParticleLifetimes,
       maxLifetimes: testParticleMaxLifetimes,
       blinkPhases: testParticleBlinkPhases,
+    },
+    domeTarget: new THREE.Vector3(0, 20, -250),
+    domeSeen: false,
+    domeSpawned: false,
+    domeGatherProgress: 0,
+    domeParticles: {
+      meshes: domeParticleMeshes,
+      velocities: domeParticleVelocities,
+      lifetimes: domeParticleLifetimes,
+      maxLifetimes: domeParticleMaxLifetimes,
+      blinkPhases: domeParticleBlinkPhases,
     },
     gridSize: 20,
     cellSize: 4,
@@ -510,6 +570,12 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     const speeds = [10, 10, 12, 10, 4, 8, 6]; // L2 fast through tunnel, L4 slow inside firewall, L5 moderate, L6 slow drift
     const speed = speeds[snap.currentLevel] ?? 10;
     state.player.baseSpeed = speed;
+    // Reset dome particle flags when entering L3.
+    if (snap.currentLevel === 3) {
+      state.domeSpawned = false;
+      state.domeSeen = false;
+      state.domeGatherProgress = 0;
+    }
     // Ground color: dark red inside the firewall, default otherwise.
     const gmat = state.ground.material as THREE.MeshStandardMaterial;
     if (snap.currentLevel === 4) {
@@ -556,6 +622,7 @@ export function tick(
       s.introDone = true;
       s.startSequence.group.removeFromParent();
       s.startSequence.dispose();
+      s.gameStartTime = s.elapsed;
       // Start L0 audio
       startBgAudio(s, 0);
       startNarration(s, 0);
@@ -624,8 +691,9 @@ export function tick(
   }
 
   // ── Test cube fly-in ───────────────────────────────────────────────
-  if (s.testCube && !s.testCubeExploded && s.elapsed < s.testCubeFlyDuration) {
-    const t = s.elapsed / s.testCubeFlyDuration;
+  const gameTime = s.elapsed - s.gameStartTime;
+  if (s.testCube && !s.testCubeExploded && gameTime < s.testCubeFlyDuration) {
+    const t = gameTime / s.testCubeFlyDuration;
     const st = t * t * (3 - 2 * t);
     s.testCube.position.lerpVectors(s.testCubeFlyFrom, s.testCubeFlyTo, st);
     if (s.testCubeEdges) {
@@ -642,8 +710,8 @@ export function tick(
       s.testCubeEdges.rotation.copy(s.testCube.rotation);
     }
 
-    if (s.elapsed >= s.testCubeExplodeTime && s.testCubeFadeStart === 0) {
-      s.testCubeFadeStart = s.elapsed;
+    if (gameTime >= s.testCubeExplodeTime && s.testCubeFadeStart === 0) {
+      s.testCubeFadeStart = gameTime;
     }
 
     if (s.testCubeFadeStart > 0) {
@@ -681,7 +749,7 @@ export function tick(
             -speed,
           );
 
-          p.lifetimes[i] = 18 + Math.random() * 6;
+          p.lifetimes[i] = 60 + Math.random() * 20;
           p.maxLifetimes[i] = p.lifetimes[i];
         }
       }
@@ -692,9 +760,9 @@ export function tick(
   if (s.testCubeExploded && s.testParticles.meshes.length > 0) {
     const p = s.testParticles;
     const explodeTime = s.testCubeFadeStart + 0.5;
-    const timeSinceExplosion = s.elapsed - explodeTime;
+    const timeSinceExplosion = gameTime - explodeTime;
     const gatherStrength = Math.min(
-      Math.max((timeSinceExplosion - 1.5) * 0.5, 0),
+      Math.max((timeSinceExplosion - 3.0) * 0.15, 0),
       1,
     );
     const tmpVec = new THREE.Vector3();
@@ -707,13 +775,19 @@ export function tick(
       }
       const vel = p.velocities[i];
       if (gatherStrength > 0) {
-        tmpVec.copy(s.testCubeTarget).sub(p.meshes[i].position).normalize();
-        vel.add(tmpVec.multiplyScalar(gatherStrength * 8 * ctx.delta));
+        const dist = p.meshes[i].position.distanceTo(s.testCubeTarget);
+        if (dist > 40) {
+          tmpVec.copy(s.testCubeTarget).sub(p.meshes[i].position).normalize();
+          vel.add(tmpVec.multiplyScalar(gatherStrength * 3 * ctx.delta));
+        } else {
+          vel.multiplyScalar(0.95);
+        }
       }
       p.meshes[i].position.x += vel.x * ctx.delta;
       p.meshes[i].position.y += vel.y * ctx.delta;
       p.meshes[i].position.z += vel.z * ctx.delta;
-      vel.multiplyScalar(0.999);
+      vel.multiplyScalar(0.998);
+
       const t = p.lifetimes[i] / p.maxLifetimes[i];
       const scl = t < 0.15 ? t / 0.15 : 1;
       p.meshes[i].scale.setScalar(Math.max(scl, 0.01));
@@ -722,6 +796,152 @@ export function tick(
       const blink = 0.5 + 0.5 * Math.sin(s.elapsed * 6 + p.blinkPhases[i]);
       const mat = p.meshes[i].material as THREE.MeshStandardMaterial;
       mat.emissiveIntensity = blink;
+    }
+
+    // Respawn particles when router station is visible and all are dead
+    if (s.routerSeen && s.terrainLevel === 0) {
+      let allDead = true;
+      for (let i = 0; i < 120; i++) {
+        if (p.lifetimes[i] > 0) {
+          allDead = false;
+          break;
+        }
+      }
+      if (allDead) {
+        const spawnPos = s.player.rig.position.clone();
+        spawnPos.z -= 30;
+        const playerSpeed = s.player.baseSpeed;
+        for (let i = 0; i < 120; i++) {
+          const mesh = p.meshes[i];
+          mesh.position.set(
+            spawnPos.x + (Math.random() - 0.5) * 8,
+            spawnPos.y + (Math.random() - 0.5) * 8,
+            spawnPos.z + (Math.random() - 0.5) * 8,
+          );
+          mesh.visible = true;
+          mesh.scale.setScalar(1);
+          const speed = playerSpeed + 2 + Math.random() * 4;
+          p.velocities[i].set(
+            (Math.random() - 0.5) * 4,
+            (Math.random() - 0.5) * 3,
+            -speed,
+          );
+          p.lifetimes[i] = 90 + Math.random() * 30;
+          p.maxLifetimes[i] = p.lifetimes[i];
+        }
+      }
+    }
+  }
+
+  // ── Dome particles (L3 — white cubes flying to dome) ─────────────
+  if (s.terrainLevel === 3 && s.domeParticles.meshes.length > 0) {
+    const dp = s.domeParticles;
+    const tmpVec = new THREE.Vector3();
+
+    // Spawn particles immediately when entering L3 (no cube, just particles)
+    if (!s.domeSpawned) {
+      s.domeSpawned = true;
+      const spawnPos = s.player.rig.position.clone();
+      spawnPos.z -= 30;
+      const playerSpeed = s.player.baseSpeed;
+      for (let i = 0; i < DOME_PARTICLE_COUNT; i++) {
+        const mesh = dp.meshes[i];
+        mesh.position.set(
+          spawnPos.x + (Math.random() - 0.5) * 10,
+          spawnPos.y + (Math.random() - 0.5) * 10,
+          spawnPos.z + (Math.random() - 0.5) * 10,
+        );
+        mesh.visible = true;
+        mesh.scale.setScalar(1);
+        const spd = playerSpeed + 2 + Math.random() * 4;
+        dp.velocities[i].set(
+          (Math.random() - 0.5) * 4,
+          (Math.random() - 0.5) * 3,
+          -spd,
+        );
+        dp.lifetimes[i] = 90 + Math.random() * 30;
+        dp.maxLifetimes[i] = dp.lifetimes[i];
+      }
+    }
+
+    // Gather strength — ramps up slowly after dome is seen
+    if (s.domeSeen && s.domeGatherProgress < 1) {
+      s.domeGatherProgress = Math.min(1, s.domeGatherProgress + ctx.delta * 0.15);
+    }
+    const gatherStrength = s.domeGatherProgress;
+
+    // Update dome particles
+    for (let i = 0; i < DOME_PARTICLE_COUNT; i++) {
+      if (dp.lifetimes[i] <= 0) continue;
+      dp.lifetimes[i] -= ctx.delta;
+      if (dp.lifetimes[i] <= 0) {
+        dp.meshes[i].visible = false;
+        continue;
+      }
+      const vel = dp.velocities[i];
+      if (gatherStrength > 0) {
+        const dist = dp.meshes[i].position.distanceTo(s.domeTarget);
+        if (dist > 40) {
+          tmpVec.copy(s.domeTarget).sub(dp.meshes[i].position).normalize();
+          vel.add(tmpVec.multiplyScalar(gatherStrength * 3 * ctx.delta));
+        } else {
+          vel.multiplyScalar(0.95);
+        }
+      }
+      dp.meshes[i].position.x += vel.x * ctx.delta;
+      dp.meshes[i].position.y += vel.y * ctx.delta;
+      dp.meshes[i].position.z += vel.z * ctx.delta;
+      vel.multiplyScalar(0.998);
+
+      const t = dp.lifetimes[i] / dp.maxLifetimes[i];
+      const scl = t < 0.15 ? t / 0.15 : 1;
+      dp.meshes[i].scale.setScalar(Math.max(scl, 0.01));
+      dp.meshes[i].rotation.x += ctx.delta * 2;
+      dp.meshes[i].rotation.y += ctx.delta * 3;
+      const blink = 0.5 + 0.5 * Math.sin(s.elapsed * 6 + dp.blinkPhases[i]);
+      const mat = dp.meshes[i].material as THREE.MeshStandardMaterial;
+      mat.emissiveIntensity = blink;
+    }
+
+    // Respawn when all dead and dome has been seen
+    if (s.domeSeen) {
+      let allDead = true;
+      for (let i = 0; i < DOME_PARTICLE_COUNT; i++) {
+        if (dp.lifetimes[i] > 0) {
+          allDead = false;
+          break;
+        }
+      }
+      if (allDead) {
+        const spawnPos = s.player.rig.position.clone();
+        spawnPos.z -= 30;
+        const playerSpeed = s.player.baseSpeed;
+        for (let i = 0; i < DOME_PARTICLE_COUNT; i++) {
+          const mesh = dp.meshes[i];
+          mesh.position.set(
+            spawnPos.x + (Math.random() - 0.5) * 8,
+            spawnPos.y + (Math.random() - 0.5) * 8,
+            spawnPos.z + (Math.random() - 0.5) * 8,
+          );
+          mesh.visible = true;
+          mesh.scale.setScalar(1);
+          const spd = playerSpeed + 2 + Math.random() * 4;
+          dp.velocities[i].set(
+            (Math.random() - 0.5) * 4,
+            (Math.random() - 0.5) * 3,
+            -spd,
+          );
+          dp.lifetimes[i] = 90 + Math.random() * 30;
+          dp.maxLifetimes[i] = dp.lifetimes[i];
+        }
+      }
+    }
+  }
+
+  // Hide dome particles when not in L3
+  if (s.terrainLevel !== 3) {
+    for (const mesh of s.domeParticles.meshes) {
+      mesh.visible = false;
     }
   }
 
@@ -790,6 +1010,11 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
     scene.remove(s.testCubeEdges);
   }
   for (const mesh of s.testParticles.meshes) {
+    mesh.geometry.dispose();
+    (mesh.material as THREE.Material).dispose();
+    scene.remove(mesh);
+  }
+  for (const mesh of s.domeParticles.meshes) {
     mesh.geometry.dispose();
     (mesh.material as THREE.Material).dispose();
     scene.remove(mesh);
