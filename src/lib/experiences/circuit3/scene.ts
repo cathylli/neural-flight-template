@@ -8,6 +8,7 @@ import { StationManager } from "./stations";
 import { EnvironmentRegistry } from "./environments/registry";
 import type { Environment } from "./environments/types";
 import { FirewallEnvironment } from "./environments/firewall/FirewallEnvironment";
+import { StartSequence } from "./start-sequence";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -74,9 +75,17 @@ export interface WFCState extends ExperienceState {
   _l2Timer: number;
   // Audio
   audioListener: THREE.AudioListener;
-  bgMusic: THREE.Audio<AudioNode>;
+  bgAudios: THREE.Audio<AudioNode>[];
+  currentBgAudio: number;
+  bgFadeFrom: number;
+  bgFadeTo: number;
+  bgFadeProgress: number;
+  bgFadeDuration: number;
   narrationAudios: THREE.Audio<AudioNode>[];
   currentNarration: number;
+  // Intro sequence
+  introDone: boolean;
+  startSequence: StartSequence;
 }
 
 /** Duration (seconds) of the neon color cross-fade on a level change. */
@@ -89,6 +98,50 @@ function startColorTransition(s: WFCState, target: THREE.Color): void {
   s.colorFrom.copy(s.colorCurrent);
   s.colorTo.copy(target);
   s.colorProgress = 0;
+}
+
+/** Cross-fade background audio to a new level track. */
+function startBgAudio(s: WFCState, level: number): void {
+  if (s.currentBgAudio === level) return;
+  // Start the new track if not playing
+  const next = s.bgAudios[level];
+  if (next && !next.isPlaying) {
+    next.setVolume(0);
+    next.play();
+  }
+  // Begin cross-fade
+  s.bgFadeFrom = s.currentBgAudio >= 0 ? 1 : 0;
+  s.bgFadeTo = 1;
+  s.bgFadeProgress = 0;
+  s.currentBgAudio = level;
+}
+
+/** Start narration for a level (stop/start). */
+function startNarration(s: WFCState, level: number): void {
+  if (s.currentNarration === level) return;
+  // Stop previous
+  if (s.currentNarration >= 0) {
+    const prev = s.narrationAudios[s.currentNarration];
+    if (prev && prev.isPlaying) prev.stop();
+  }
+  // Start new
+  s.currentNarration = level;
+  const next = s.narrationAudios[level];
+  if (next) next.play();
+}
+
+/** Advance the background audio cross-fade each frame. */
+function updateBgFade(s: WFCState, delta: number): void {
+  if (s.bgFadeProgress >= 1) return;
+  s.bgFadeProgress = Math.min(
+    1,
+    s.bgFadeProgress + delta / s.bgFadeDuration,
+  );
+  const t = s.bgFadeProgress;
+  const eased = t * t * (3 - 2 * t); // smoothstep
+  const vol = s.bgFadeFrom + (s.bgFadeTo - s.bgFadeFrom) * eased;
+  const current = s.bgAudios[s.currentBgAudio];
+  if (current && current.isPlaying) current.setVolume(vol * 0.15);
 }
 
 /** Advance the neon color cross-fade and push the result to the materials. */
@@ -265,30 +318,37 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   fadeMesh.visible = false;
   player.camera.add(fadeMesh);
 
+  // ── Start Sequence ────────────────────────────────────────────────
+  const startSequence = new StartSequence();
+  player.camera.add(startSequence.group);
+  startSequence.start();
+
   // ── Audio ────────────────────────────────────────────────────────────────
   const audioListener = new THREE.AudioListener();
   player.camera.add(audioListener);
   const audioLoader = new THREE.AudioLoader();
 
-  // Background music — loops forever
-  let bgMusic: THREE.Audio<AudioNode> | null = null;
-  try {
-    const bgBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-      audioLoader.load("/Audio/bg.mp3", resolve, undefined, reject);
-    });
-    bgMusic = new THREE.Audio(audioListener);
-    bgMusic.setBuffer(bgBuffer);
-    bgMusic.setLoop(true);
-    bgMusic.setVolume(0.3);
-    bgMusic.play();
-  } catch {
-    console.warn("Background audio not loaded — place static/Audio/bg.mp3");
+  // Background music — 1.mp3 to 7.mp3, loop, quiet, cross-fade on level change
+  const bgAudios: THREE.Audio<AudioNode>[] = [];
+  for (let i = 1; i <= 7; i++) {
+    try {
+      const buf = await new Promise<AudioBuffer>((resolve, reject) => {
+        audioLoader.load(`/Audio/${i}.mp3`, resolve, undefined, reject);
+      });
+      const audio = new THREE.Audio(audioListener);
+      audio.setBuffer(buf);
+      audio.setLoop(true);
+      audio.setVolume(0);
+      bgAudios.push(audio);
+    } catch {
+      console.warn(`BG audio not loaded — place static/Audio/${i}.mp3`);
+      bgAudios.push(null as unknown as THREE.Audio<AudioNode>);
+    }
   }
 
-  // Per-level narration — one track per level, plays on level change
+  // Narration — 01.mp3 to 07.mp3, plays on level change, stop/start
   const narrationAudios: THREE.Audio<AudioNode>[] = [];
-  const LEVEL_COUNT = 7;
-  for (let i = 0; i < LEVEL_COUNT; i++) {
+  for (let i = 0; i < 7; i++) {
     try {
       const buf = await new Promise<AudioBuffer>((resolve, reject) => {
         audioLoader.load(
@@ -309,11 +369,9 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     }
   }
 
-  // Play L0 narration immediately
-  let currentNarration = 0;
-  if (narrationAudios[0]) {
-    narrationAudios[0].play();
-  }
+  // Don't play yet — starts after intro sequence
+  let currentBgAudio = -1;
+  let currentNarration = -1;
 
   // Level progression — tracks chunks flown + stations visited, advances
   // the world through its three narrative levels.
@@ -407,9 +465,16 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     _domeExitTriggered: false,
     _l2Timer: 0,
     audioListener,
-    bgMusic: bgMusic as unknown as THREE.Audio<AudioNode>,
+    bgAudios,
+    currentBgAudio,
+    bgFadeFrom: 0,
+    bgFadeTo: 0,
+    bgFadeProgress: 1,
+    bgFadeDuration: 2.0,
     narrationAudios,
     currentNarration,
+    introDone: false,
+    startSequence,
   };
 
   // Flight collision surface: the higher of the ground plane and the active
@@ -466,12 +531,10 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
         mesh.visible = false;
       }
     }
+    // Cross-fade to the new level's background music
+    startBgAudio(state, snap.currentLevel);
     // Switch narration to the new level's track
-    const prev = state.narrationAudios[state.currentNarration];
-    if (prev && prev.isPlaying) prev.stop();
-    state.currentNarration = snap.currentLevel;
-    const next = state.narrationAudios[snap.currentLevel];
-    if (next) next.play();
+    startNarration(state, snap.currentLevel);
   });
 
   return state;
@@ -486,11 +549,28 @@ export function tick(
   const s = state as WFCState;
   s.elapsed += ctx.delta;
 
+  // ── Start Sequence ──────────────────────────────────────────────
+  if (!s.introDone) {
+    s.startSequence.update(ctx.delta);
+    if (s.startSequence.done) {
+      s.introDone = true;
+      s.startSequence.group.removeFromParent();
+      s.startSequence.dispose();
+      // Start L0 audio
+      startBgAudio(s, 0);
+      startNarration(s, 0);
+    }
+    return { state: s };
+  }
+
   s.player.tick(ctx.delta);
   s.currentEnvironment.tick?.(ctx.delta, s.player.rig.position);
 
   // Drive the black fade + perform the environment swap at full black.
   updateFade(s, ctx.delta);
+
+  // Cross-fade background audio
+  updateBgFade(s, ctx.delta);
 
   // Handle rebuild triggered by the settings panel (structural WFC changes).
   // Level changes go through the fade/swap path below instead.
@@ -671,6 +751,12 @@ export function tick(
 export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   const s = state as WFCState;
 
+  // Clean up start sequence if still active
+  if (!s.introDone && s.startSequence) {
+    s.startSequence.group.removeFromParent();
+    s.startSequence.dispose();
+  }
+
   s.chunkManager.dispose();
   s.environments.dispose();
   s.stationManager.dispose();
@@ -683,7 +769,9 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   s.fadeMaterial.dispose();
 
   // Stop all audio
-  if (s.bgMusic && s.bgMusic.isPlaying) s.bgMusic.stop();
+  for (const audio of s.bgAudios) {
+    if (audio && audio.isPlaying) audio.stop();
+  }
   for (const audio of s.narrationAudios) {
     if (audio && audio.isPlaying) audio.stop();
   }
