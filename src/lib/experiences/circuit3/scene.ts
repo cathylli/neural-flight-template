@@ -118,14 +118,19 @@ function startColorTransition(s: WFCState, target: THREE.Color): void {
 /** Cross-fade background audio to a new level track. */
 function startBgAudio(s: WFCState, level: number): void {
   if (s.currentBgAudio === level) return;
-  // Start the new track if not playing
+  // Stop the old track
+  if (s.currentBgAudio >= 0) {
+    const old = s.bgAudios[s.currentBgAudio];
+    if (old && old.isPlaying) old.stop();
+  }
+  // Start the new track
   const next = s.bgAudios[level];
   if (next && !next.isPlaying) {
     next.setVolume(0);
     next.play();
   }
   // Begin cross-fade
-  s.bgFadeFrom = s.currentBgAudio >= 0 ? 1 : 0;
+  s.bgFadeFrom = 0;
   s.bgFadeTo = 1;
   s.bgFadeProgress = 0;
   s.currentBgAudio = level;
