@@ -15,12 +15,13 @@ export class ComputerStation implements StationVisual {
 	readonly object = new THREE.Group();
 	private readonly pivot: THREE.Group;
 	private loaded = false;
-	private readonly baseY = 0;
+	private readonly baseY: number;
 	private readonly sharedMat: THREE.MeshStandardMaterial;
 	private readonly wireMat: THREE.LineBasicMaterial;
 	private readonly wires: THREE.LineSegments[] = [];
 
 	constructor(ctx: StationContext) {
+		this.baseY = ctx.position.y;
 		this.pivot = new THREE.Group();
 		this.pivot.position.set(ctx.position.x, this.baseY, ctx.position.z);
 		this.object.add(this.pivot);

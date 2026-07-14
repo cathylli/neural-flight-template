@@ -74,6 +74,7 @@ export interface WFCState extends ExperienceState {
   domeSeen: boolean;
   domeSpawned: boolean;
   domeGatherProgress: number;
+  domeSpawnTime: number;
   domeParticles: {
     meshes: THREE.Mesh[];
     velocities: THREE.Vector3[];
@@ -576,6 +577,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     domeSeen: false,
     domeSpawned: false,
     domeGatherProgress: 0,
+    domeSpawnTime: 0,
     domeParticles: {
       meshes: domeParticleMeshes,
       velocities: domeParticleVelocities,
@@ -641,6 +643,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
       state.domeSpawned = false;
       state.domeSeen = false;
       state.domeGatherProgress = 0;
+      state.domeSpawnTime = 0;
     }
     // Ground color: dark red inside the firewall, default otherwise.
     const gmat = state.ground.material as THREE.MeshStandardMaterial;
@@ -911,41 +914,43 @@ export function tick(
   // ── Dome particles (L3 — white cubes flying to dome) ─────────────
   if (s.terrainLevel === 3 && s.domeParticles.meshes.length > 0) {
     const dp = s.domeParticles;
-    const tmpVec = new THREE.Vector3();
 
-    // Spawn particles immediately when entering L3 (no cube, just particles)
+    // Spawn particles immediately when entering L3 (scatter like L0 test cube)
     if (!s.domeSpawned) {
       s.domeSpawned = true;
+      s.domeSpawnTime = s.elapsed;
       const spawnPos = s.player.rig.position.clone();
-      spawnPos.z -= 30;
-      const playerSpeed = s.player.baseSpeed;
       for (let i = 0; i < DOME_PARTICLE_COUNT; i++) {
         const mesh = dp.meshes[i];
         mesh.position.set(
-          spawnPos.x + (Math.random() - 0.5) * 10,
-          spawnPos.y + (Math.random() - 0.5) * 10,
-          spawnPos.z + (Math.random() - 0.5) * 10,
+          spawnPos.x + (Math.random() - 0.5) * 3,
+          spawnPos.y + (Math.random() - 0.5) * 3,
+          spawnPos.z + (Math.random() - 0.5) * 3,
         );
         mesh.visible = true;
         mesh.scale.setScalar(1);
-        const spd = playerSpeed + 2 + Math.random() * 4;
+
+        const speed = s.player.baseSpeed + 30 + Math.random() * 20;
         dp.velocities[i].set(
-          (Math.random() - 0.5) * 4,
-          (Math.random() - 0.5) * 3,
-          -spd,
+          (Math.random() - 0.5) * 20,
+          (Math.random() - 0.5) * 12,
+          -speed,
         );
-        dp.lifetimes[i] = 90 + Math.random() * 30;
+
+        dp.lifetimes[i] = 60 + Math.random() * 20;
         dp.maxLifetimes[i] = dp.lifetimes[i];
       }
     }
 
-    // Gather strength — ramps up slowly after dome is seen
-    if (s.domeSeen && s.domeGatherProgress < 1) {
-      s.domeGatherProgress = Math.min(1, s.domeGatherProgress + ctx.delta * 0.15);
-    }
-    const gatherStrength = s.domeGatherProgress;
+    // Gather strength — time-based with 3s delay, same as L0 test cube
+    const timeSinceSpawn = s.elapsed - s.domeSpawnTime;
+    const gatherStrength = Math.min(
+      Math.max((timeSinceSpawn - 3.0) * 0.15, 0),
+      1,
+    );
 
     // Update dome particles
+    const tmpVec = new THREE.Vector3();
     for (let i = 0; i < DOME_PARTICLE_COUNT; i++) {
       if (dp.lifetimes[i] <= 0) continue;
       dp.lifetimes[i] -= ctx.delta;
@@ -988,25 +993,26 @@ export function tick(
         }
       }
       if (allDead) {
+        s.domeSpawnTime = s.elapsed;
         const spawnPos = s.player.rig.position.clone();
-        spawnPos.z -= 30;
-        const playerSpeed = s.player.baseSpeed;
         for (let i = 0; i < DOME_PARTICLE_COUNT; i++) {
           const mesh = dp.meshes[i];
           mesh.position.set(
-            spawnPos.x + (Math.random() - 0.5) * 8,
-            spawnPos.y + (Math.random() - 0.5) * 8,
-            spawnPos.z + (Math.random() - 0.5) * 8,
+            spawnPos.x + (Math.random() - 0.5) * 3,
+            spawnPos.y + (Math.random() - 0.5) * 3,
+            spawnPos.z + (Math.random() - 0.5) * 3,
           );
           mesh.visible = true;
           mesh.scale.setScalar(1);
-          const spd = playerSpeed + 2 + Math.random() * 4;
+
+          const speed = s.player.baseSpeed + 30 + Math.random() * 20;
           dp.velocities[i].set(
-            (Math.random() - 0.5) * 4,
-            (Math.random() - 0.5) * 3,
-            -spd,
+            (Math.random() - 0.5) * 20,
+            (Math.random() - 0.5) * 12,
+            -speed,
           );
-          dp.lifetimes[i] = 90 + Math.random() * 30;
+
+          dp.lifetimes[i] = 60 + Math.random() * 20;
           dp.maxLifetimes[i] = dp.lifetimes[i];
         }
       }

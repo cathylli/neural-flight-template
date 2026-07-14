@@ -135,6 +135,9 @@ export class StationManager implements StationSpawnPolicy {
     if (this.spawnDelayRemaining > 0) return 0; // fly on a bit after a level change
     const dist = Math.max(Math.abs(cx - pcx), Math.abs(cz - pcz));
     if (dist < MIN_STATION_CHUNK_DIST) return 0;
+    // Only spawn stations ahead of the player — the player flies in -Z
+    // direction, so reject chunks that are clearly behind (+Z side).
+    if (cz > pcz + 1) return 0;
     return STATION_TILE_WEIGHT;
   }
 
