@@ -32,7 +32,7 @@
  * — the counter restarts on every level change). The same value feeds the
  * station spawn delay in stations.ts, so station and threshold stay in lock-step.
  */
-export const LEVEL_THRESHOLDS: number[] = [8, 6, 8, 8, 8, 8, 8];
+export const LEVEL_THRESHOLDS: number[] = [8, 6, 6, 8, 8, 10, 10];
 
 /** Per-level generation parameters fed to the ChunkManager on a level change. */
 export interface LevelTileSet {

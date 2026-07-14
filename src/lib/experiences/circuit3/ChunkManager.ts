@@ -107,6 +107,12 @@ export class ChunkManager {
     // old 2D X/Z streaming. Keys carry all three axes so a vertical environment
     // can hold stacked layers at the same (cx, cz) without them colliding.
     const vr = this.environment.verticalRadius ?? 0;
+    // The layer that hosts stations & feeds level progression. In a 2D world it
+    // is always the ground layer (0). In a volumetric world it follows the
+    // player's current vertical layer (pcy) so the station always spawns on the
+    // layer you are flying in — otherwise a player who climbs above `cy = 0`
+    // would leave the station's layer un-streamed and it could never appear.
+    const stationLayer = vr > 0 ? pcy : 0;
     const desired = new Set<string>();
     for (let dx = -RENDER_RADIUS; dx <= RENDER_RADIUS; dx++) {
       for (let dz = -RENDER_RADIUS; dz <= RENDER_RADIUS; dz++) {
@@ -123,9 +129,10 @@ export class ChunkManager {
         chunk.dispose();
         this.activeChunks.delete(key);
         const [cx, cy, cz] = key.split(",").map(Number);
-        // Station bookkeeping lives on the ground layer only (see spawn below),
-        // so only that layer reports an unload.
-        if (cy === 0) this.stationPolicy?.onChunkUnloaded(cx, cz);
+        // Report every unload with its layer; the station policy only acts on the
+        // one that currently hosts a station (matched by cx/cy/cz), so this works
+        // regardless of which layer the station spawned on.
+        this.stationPolicy?.onChunkUnloaded(cx, cy, cz);
       }
     }
 
@@ -133,11 +140,12 @@ export class ChunkManager {
     for (const key of desired) {
       if (this.activeChunks.has(key)) continue;
       const [cx, cy, cz] = key.split(",").map(Number);
-      // Only the ground layer hosts stations and counts toward level
-      // progression — vertical layers are purely-visual volume on top of it, so
+      // Only the station layer (the player's current vertical layer, or the
+      // ground layer in a 2D world) hosts stations and counts toward level
+      // progression — the other vertical layers are purely-visual volume, so
       // they never spawn a station nor inflate the explored-chunk counter.
-      const isGroundLayer = cy === 0;
-      const stationWeight = isGroundLayer
+      const isStationLayer = cy === stationLayer;
+      const stationWeight = isStationLayer
         ? (this.stationPolicy?.stationWeightFor(cx, cz, pcx, pcz) ?? 0)
         : 0;
       const buildParams: EnvironmentBuildParams = {
@@ -157,12 +165,12 @@ export class ChunkManager {
       // can flip its spawn flag and keep the station unique even across chunks
       // created in the same batch.
       if (chunk.stationSlot) {
-        this.stationPolicy?.reportStationPlaced(chunk.stationSlot, cx, cz);
+        this.stationPolicy?.reportStationPlaced(chunk.stationSlot, cx, cy, cz);
       }
       // Count genuinely-explored chunks only — repopulation after a rebuild or
       // an environment swap regenerates the same positions and must not inflate
       // the level-progression counter.
-      if (!this.suppressChunkCount && isGroundLayer) this.onChunkGenerated?.();
+      if (!this.suppressChunkCount && isStationLayer) this.onChunkGenerated?.();
     }
 
     // First reconcile after a rebuild / swap is done — resume counting.

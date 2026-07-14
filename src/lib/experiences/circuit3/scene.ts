@@ -100,8 +100,8 @@ export interface WFCState extends ExperienceState {
   audioListener: THREE.AudioListener;
   bgAudios: THREE.Audio<AudioNode>[];
   currentBgAudio: number;
-  bgFadeFrom: number;
-  bgFadeTo: number;
+  /** Outgoing track index during a cross-fade (-1 = none). */
+  bgPrevAudio: number;
   bgFadeProgress: number;
   bgFadeDuration: number;
   narrationAudios: THREE.Audio<AudioNode>[];
@@ -115,6 +115,8 @@ export interface WFCState extends ExperienceState {
 const COLOR_TRANSITION_SECONDS = 2.5;
 /** Duration (seconds) of one direction of the black fade (out, then in). */
 const FADE_SECONDS = 1.2;
+/** Peak volume of a background music track (kept quiet under the narration). */
+const BG_MAX_VOLUME = 0.15;
 
 /** Begin fading the neon color toward `target` from whatever is shown now. */
 function startColorTransition(s: WFCState, target: THREE.Color): void {
@@ -126,20 +128,27 @@ function startColorTransition(s: WFCState, target: THREE.Color): void {
 /** Cross-fade background audio to a new level track. */
 function startBgAudio(s: WFCState, level: number): void {
   if (s.currentBgAudio === level) return;
-  // Stop the old track
-  if (s.currentBgAudio >= 0) {
-    const old = s.bgAudios[s.currentBgAudio];
-    if (old && old.isPlaying) old.stop();
+
+  // A previous cross-fade may still be running. We can only fade one pair at a
+  // time, so hard-stop that leftover outgoing track before starting the new one.
+  if (s.bgPrevAudio >= 0 && s.bgPrevAudio !== level) {
+    const stale = s.bgAudios[s.bgPrevAudio];
+    if (stale && stale.isPlaying) stale.stop();
   }
-  // Start the new track
+
+  // The current track becomes the outgoing one — keep it PLAYING so the fade
+  // below can take it down to silence instead of a hard cut.
+  s.bgPrevAudio = s.currentBgAudio;
+
+  // Start the incoming track at silence (unless it's already the one fading out,
+  // in which case let it keep its current volume and just reverse direction).
   const next = s.bgAudios[level];
   if (next && !next.isPlaying) {
     next.setVolume(0);
     next.play();
   }
-  // Begin cross-fade
-  s.bgFadeFrom = 0;
-  s.bgFadeTo = 1;
+
+  // Begin the cross-fade: incoming 0→1, outgoing 1→0 (see updateBgFade).
   s.bgFadeProgress = 0;
   s.currentBgAudio = level;
 }
@@ -160,16 +169,32 @@ function startNarration(s: WFCState, level: number): void {
 
 /** Advance the background audio cross-fade each frame. */
 function updateBgFade(s: WFCState, delta: number): void {
-  if (s.bgFadeProgress >= 1) return;
+  if (s.bgFadeProgress >= 1) {
+    // Fade already finished — make sure the outgoing track is fully stopped and
+    // released so it doesn't linger silently in the mix.
+    if (s.bgPrevAudio >= 0) {
+      const prev = s.bgAudios[s.bgPrevAudio];
+      if (prev && prev.isPlaying) prev.stop();
+      s.bgPrevAudio = -1;
+    }
+    return;
+  }
   s.bgFadeProgress = Math.min(
     1,
     s.bgFadeProgress + delta / s.bgFadeDuration,
   );
   const t = s.bgFadeProgress;
   const eased = t * t * (3 - 2 * t); // smoothstep
-  const vol = s.bgFadeFrom + (s.bgFadeTo - s.bgFadeFrom) * eased;
+
+  // Incoming track fades up to full volume …
   const current = s.bgAudios[s.currentBgAudio];
-  if (current && current.isPlaying) current.setVolume(vol * 0.15);
+  if (current && current.isPlaying) current.setVolume(eased * BG_MAX_VOLUME);
+
+  // … while the outgoing track fades down at the same time (true cross-fade).
+  if (s.bgPrevAudio >= 0) {
+    const prev = s.bgAudios[s.bgPrevAudio];
+    if (prev && prev.isPlaying) prev.setVolume((1 - eased) * BG_MAX_VOLUME);
+  }
 }
 
 /** Advance the neon color cross-fade and push the result to the materials. */
@@ -569,8 +594,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     audioListener,
     bgAudios,
     currentBgAudio,
-    bgFadeFrom: 0,
-    bgFadeTo: 0,
+    bgPrevAudio: -1,
     bgFadeProgress: 1,
     bgFadeDuration: 2.0,
     narrationAudios,

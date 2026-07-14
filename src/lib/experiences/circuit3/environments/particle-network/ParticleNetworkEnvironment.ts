@@ -222,9 +222,12 @@ class ParticleNetworkChunk implements ChunkContent {
 			}
 		}
 
+		// Station sits at the chunk centre on this chunk's own layer (oy), so in the
+		// volumetric world it appears at whatever height the player is flying, not
+		// pinned to y = 0.
 		this.stationSlot =
 			params.stationWeight > 0
-				? new THREE.Vector3(ox, 0, oz)
+				? new THREE.Vector3(ox, oy, oz)
 				: null;
 	}
 

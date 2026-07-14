@@ -65,16 +65,17 @@ export interface StationSpawnPolicy {
    * player's current chunk (pcx, pcz). 0 = excluded.
    */
   stationWeightFor(cx: number, cz: number, pcx: number, pcz: number): number;
-  /** Report that the chunk at (cx, cz) placed the station at `worldPos`. */
-  reportStationPlaced(worldPos: THREE.Vector3, cx: number, cz: number): void;
-  /** Notify that the chunk at (cx, cz) was unloaded. */
-  onChunkUnloaded(cx: number, cz: number): void;
+  /** Report that the chunk at (cx, cy, cz) placed the station at `worldPos`. */
+  reportStationPlaced(worldPos: THREE.Vector3, cx: number, cy: number, cz: number): void;
+  /** Notify that the chunk at (cx, cy, cz) was unloaded. */
+  onChunkUnloaded(cx: number, cy: number, cz: number): void;
 }
 
 /** The single station currently placed in the world (for the active level). */
 interface ActiveStation {
   level: number;
   cx: number;
+  cy: number;
   cz: number;
   center: THREE.Vector3;
   radiusSq: number;
@@ -137,7 +138,7 @@ export class StationManager implements StationSpawnPolicy {
     return STATION_TILE_WEIGHT;
   }
 
-  reportStationPlaced(worldPos: THREE.Vector3, cx: number, cz: number): void {
+  reportStationPlaced(worldPos: THREE.Vector3, cx: number, cy: number, cz: number): void {
     const level = this.currentLevel;
     if (level < 0 || level >= this.visited.length) return;
     if (this.visited[level] || this.active) return; // ignore extras
@@ -155,6 +156,7 @@ export class StationManager implements StationSpawnPolicy {
     this.active = {
       level,
       cx,
+      cy,
       cz,
       center: worldPos.clone(),
       radiusSq: radius * radius,
@@ -172,14 +174,19 @@ export class StationManager implements StationSpawnPolicy {
    *  - If it hosted an already-visited station, remove it for good (it vanishes
    *    together with its chunk and won't respawn, since the level stays visited).
    */
-  onChunkUnloaded(cx: number, cz: number): void {
-    if (this.active && this.active.cx === cx && this.active.cz === cz) {
+  onChunkUnloaded(cx: number, cy: number, cz: number): void {
+    if (
+      this.active &&
+      this.active.cx === cx &&
+      this.active.cy === cy &&
+      this.active.cz === cz
+    ) {
       this.removeVisual(this.active.visual);
       this.active = null;
     }
     for (let i = this.visitedStations.length - 1; i >= 0; i--) {
       const st = this.visitedStations[i];
-      if (st.cx === cx && st.cz === cz) {
+      if (st.cx === cx && st.cy === cy && st.cz === cz) {
         this.removeVisual(st.visual);
         this.visitedStations.splice(i, 1);
       }

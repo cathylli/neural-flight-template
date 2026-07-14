@@ -424,10 +424,13 @@ class NeuralChunk implements ChunkContent {
 			this.packetMesh = null;
 		}
 
-		// Only the ground layer (guaranteed by the ChunkManager) ever carries a
-		// station weight, so the slot sits at the chunk's world-XZ centre at y=0.
+		// The station layer follows the player (ChunkManager), so the slot sits at
+		// this chunk's world-XZ centre on its own layer (originY) — the station
+		// appears at the height the player is flying, not pinned to y = 0.
 		this.stationSlot =
-			params.stationWeight > 0 ? new THREE.Vector3(originX, 0, originZ) : null;
+			params.stationWeight > 0
+				? new THREE.Vector3(originX, originY, originZ)
+				: null;
 	}
 
 	update(elapsed: number): void {
