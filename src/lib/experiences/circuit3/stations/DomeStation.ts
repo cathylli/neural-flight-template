@@ -7,6 +7,8 @@ import type { StationContext, StationVisual } from "./types";
 
 const DOME_RADIUS = 120;
 const DOME_DETAIL = 5;
+/** Seconds over which the dome fades in when it first spawns. */
+const FADE_IN_DURATION = 2.5;
 
 // ── Dome Shader ──────────────────────────────────────────────────────────────
 
@@ -40,6 +42,7 @@ void main() {
 const domeFragmentShader = /* glsl */ `
 uniform vec3 uColor;
 uniform float uTime;
+uniform float uFade;
 
 varying vec3 vWorldPos;
 varying vec3 vNormal;
@@ -61,7 +64,7 @@ void main() {
   float energy = ripple * 0.15;
   float alpha = (0.25 + glow + energy) * pulse;
 
-  gl_FragColor = vec4(uColor, alpha);
+  gl_FragColor = vec4(uColor, alpha * uFade);
 }
 `;
 
@@ -72,6 +75,8 @@ export class DomeStation implements StationVisual {
 	readonly object: THREE.Group;
 	private readonly domeMat: THREE.ShaderMaterial;
 	private readonly wireframeMat: THREE.LineBasicMaterial;
+	/** Scene-clock time of the first update tick; -1 until the dome first ticks. */
+	private startElapsed = -1;
 
 	constructor(ctx: StationContext) {
 		this.object = new THREE.Group();
@@ -86,6 +91,7 @@ export class DomeStation implements StationVisual {
 			uniforms: {
 				uTime: { value: 0 },
 				uColor: { value: neon.clone() },
+				uFade: { value: 0 }, // starts invisible, ramps up in update()
 			},
 			transparent: true,
 			side: THREE.DoubleSide,
@@ -109,9 +115,17 @@ export class DomeStation implements StationVisual {
 
 	update(elapsed: number): void {
 		this.domeMat.uniforms.uTime.value = elapsed;
+
+		// Fade the whole dome up over FADE_IN_DURATION from its first tick, so it
+		// eases into view instead of popping in at full opacity when it spawns.
+		if (this.startElapsed < 0) this.startElapsed = elapsed;
+		const t = Math.min((elapsed - this.startElapsed) / FADE_IN_DURATION, 1);
+		const fade = t * t * (3 - 2 * t); // smoothstep
+		this.domeMat.uniforms.uFade.value = fade;
+
 		const flicker =
 			0.12 + 0.04 * Math.sin(elapsed * 3.7) + 0.03 * Math.sin(elapsed * 7.1);
-		this.wireframeMat.opacity = flicker;
+		this.wireframeMat.opacity = flicker * fade;
 	}
 
 	dispose(): void {

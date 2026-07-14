@@ -118,6 +118,16 @@ const COLOR_TRANSITION_SECONDS = 2.5;
 const FADE_SECONDS = 1.2;
 /** Peak volume of a background music track (kept quiet under the narration). */
 const BG_MAX_VOLUME = 0.15;
+/**
+ * When a ground-based level swaps in, the player is snapped down to this height
+ * above the surface — but only if they arrive higher than GROUND_ENTRY_MAX.
+ * A volumetric level (neural net / fiber tunnel) lets the player gain unlimited
+ * altitude and the flight clamp is a floor only, so without this the tunnel
+ * altitude carries into the flat level and strands the player far above ground.
+ */
+const GROUND_ENTRY_HEIGHT = 12;
+/** Above this height over the surface, a ground-level entry triggers the snap. */
+const GROUND_ENTRY_MAX = 40;
 
 /** Begin fading the neon color toward `target` from whatever is shown now. */
 function startColorTransition(s: WFCState, target: THREE.Color): void {
@@ -255,10 +265,21 @@ function updateFade(s: WFCState, delta: number): void {
 
     s.fadeTarget = 0; // reveal
 
-    // Apply pending teleport while screen is still black
+    // Apply pending teleport while screen is still black. An explicit teleport
+    // (e.g. the L4 dome center) sets the position outright and wins.
     if (s._pendingTeleport) {
       s.player.rig.position.copy(s._pendingTeleport);
       s._pendingTeleport = null;
+    } else if (s.chunkManager.hasGroundFloor()) {
+      // Otherwise, if the new level is ground-based, catch the case where the
+      // player carried altitude out of a volumetric level (see GROUND_ENTRY_*):
+      // snap them back down to a sane cruising height if they arrive far above
+      // the ground. Done while the screen is black so the drop is unseen.
+      const p = s.player.rig.position;
+      const floor = s.player.heightSampler?.(p.x, p.z) ?? 0;
+      if (p.y > floor + GROUND_ENTRY_MAX) {
+        p.y = floor + GROUND_ENTRY_HEIGHT;
+      }
     }
   }
 
