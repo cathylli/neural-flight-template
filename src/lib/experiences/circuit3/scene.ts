@@ -9,6 +9,7 @@ import { EnvironmentRegistry } from "./environments/registry";
 import type { Environment } from "./environments/types";
 import { FirewallEnvironment } from "./environments/firewall/FirewallEnvironment";
 import { StartSequence } from "./start-sequence";
+import { EndSequence } from "./end-sequence";
 
 const DOME_PARTICLE_COUNT = 120;
 
@@ -88,6 +89,13 @@ export interface WFCState extends ExperienceState {
   _domeExitTriggered: boolean;
   /** Timer for L2 time-based transition. */
   _l2Timer: number;
+  /** Pending teleport position (applied when fade is complete) */
+  _pendingTeleport: THREE.Vector3 | null;
+  /** End sequence state */
+  endSequence: EndSequence | null;
+  endSequenceStarted: boolean;
+  /** Intro fade in progress (swap level 0 = intro, no env swap needed) */
+  introFadeDone: boolean;
   // Audio
   audioListener: THREE.AudioListener;
   bgAudios: THREE.Audio<AudioNode>[];
@@ -106,7 +114,7 @@ export interface WFCState extends ExperienceState {
 /** Duration (seconds) of the neon color cross-fade on a level change. */
 const COLOR_TRANSITION_SECONDS = 2.5;
 /** Duration (seconds) of one direction of the black fade (out, then in). */
-const FADE_SECONDS = 0.4;
+const FADE_SECONDS = 1.2;
 
 /** Begin fading the neon color toward `target` from whatever is shown now. */
 function startColorTransition(s: WFCState, target: THREE.Color): void {
@@ -193,24 +201,39 @@ function updateFade(s: WFCState, delta: number): void {
   if (s.pendingSwapLevel !== null && s.fade >= 1) {
     const level = s.pendingSwapLevel;
     s.pendingSwapLevel = null;
-    // Dispose the old environment so scene-level objects (e.g. firewall dome)
-    // are removed before the new one takes over.
-    s.currentEnvironment.dispose?.();
-    // Swap to this level's environment (its own tiles / materials / look) and
-    // force a full regeneration behind the black screen.
-    const env = s.environments.forLevel(level, new THREE.Color(s.neonColor));
-    env.init?.(s.scene);
-    s.currentEnvironment = env;
-    s.chunkManager.setEnvironment(env, {
-      buildingDensity: s.buildingDensity,
-      traceComplexity: s.traceComplexity,
-      terrainLevel: s.terrainLevel,
-      particleCount: s.particleCount,
-      connectionDistance: s.connectionDistance,
-      driftSpeed: s.driftSpeed,
-    });
 
-    s.fadeTarget = 0; // reveal the freshly built world
+    // Intro fade: remove canvas and start audio (no environment swap needed)
+    if (!s.introFadeDone) {
+      s.introFadeDone = true;
+      if (s.startSequence) {
+        s.startSequence.group.removeFromParent();
+        s.startSequence.dispose();
+      }
+      startBgAudio(s, 0);
+      startNarration(s, 0);
+    } else {
+      // Level transition: swap environment
+      s.currentEnvironment.dispose?.();
+      const env = s.environments.forLevel(level, new THREE.Color(s.neonColor));
+      env.init?.(s.scene);
+      s.currentEnvironment = env;
+      s.chunkManager.setEnvironment(env, {
+        buildingDensity: s.buildingDensity,
+        traceComplexity: s.traceComplexity,
+        terrainLevel: s.terrainLevel,
+        particleCount: s.particleCount,
+        connectionDistance: s.connectionDistance,
+        driftSpeed: s.driftSpeed,
+      });
+    }
+
+    s.fadeTarget = 0; // reveal
+
+    // Apply pending teleport while screen is still black
+    if (s._pendingTeleport) {
+      s.player.rig.position.copy(s._pendingTeleport);
+      s._pendingTeleport = null;
+    }
   }
 
   s.fadeMaterial.opacity = s.fade;
@@ -426,7 +449,17 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
   // Stations — unique per-level anchors with trigger volumes. Entering a
   // station's trigger marks it visited, which feeds the progression rule.
   const stationManager = new StationManager(ctx.scene);
-  stationManager.onVisit = (level) => levelState.markStationVisited(level);
+  stationManager.onVisit = (level) => {
+    levelState.markStationVisited(level);
+    // Trigger end sequence when visiting the final station (L6)
+    if (level === 6 && !state.endSequenceStarted) {
+      const endSeq = new EndSequence();
+      endSeq.start();
+      state.endSequence = endSeq;
+      state.endSequenceStarted = true;
+      player.camera.add(endSeq.group);
+    }
+  };
   stationManager.onStationPlaced = (pos, level) => {
     if (level === 0 || level === 1) {
       state.testCubeTarget.copy(pos);
@@ -529,6 +562,10 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     cellSize: 4,
     _domeExitTriggered: false,
     _l2Timer: 0,
+    _pendingTeleport: null,
+    endSequence: null,
+    endSequenceStarted: false,
+    introFadeDone: false,
     audioListener,
     bgAudios,
     currentBgAudio,
@@ -572,7 +609,7 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     // The new level's station becomes eligible to spawn.
     stationManager.setLevel(snap.currentLevel);
     // Adjust flight speed per level.
-    const speeds = [10, 10, 12, 10, 4, 8, 6]; // L2 fast through tunnel, L4 slow inside firewall, L5 moderate, L6 slow drift
+    const speeds = [10, 10, 12, 10, 4, 8, 14]; // L2 fast through tunnel, L4 slow inside firewall, L5 moderate, L6 fast finale
     const speed = speeds[snap.currentLevel] ?? 10;
     state.player.baseSpeed = speed;
     // Reset dome particle flags when entering L3.
@@ -585,8 +622,8 @@ export async function setup(ctx: SetupContext): Promise<WFCState> {
     const gmat = state.ground.material as THREE.MeshStandardMaterial;
     if (snap.currentLevel === 4) {
       gmat.color.set(0x1a0505);
-      // Teleport player to dome center so they don't spawn at the wall.
-      state.player.rig.position.set(0, 3, 0);
+      // Teleport player to dome center after fade completes.
+      state._pendingTeleport = new THREE.Vector3(0, 3, 0);
     } else {
       gmat.color.set(0x0d0510);
     }
@@ -625,12 +662,21 @@ export function tick(
     s.startSequence.update(ctx.delta);
     if (s.startSequence.done) {
       s.introDone = true;
-      s.startSequence.group.removeFromParent();
-      s.startSequence.dispose();
       s.gameStartTime = s.elapsed;
-      // Start L0 audio
-      startBgAudio(s, 0);
-      startNarration(s, 0);
+      // Fade to black, then reveal the game
+      s.fadeTarget = 1;
+      s.pendingSwapLevel = 0;
+    }
+    return { state: s };
+  }
+
+  // ── End Sequence ─────────────────────────────────────────────
+  if (s.endSequence && !s.endSequence.done) {
+    s.endSequence.update(ctx.delta);
+    if (s.endSequence.done) {
+      s.endSequence.group.removeFromParent();
+      s.endSequence.dispose();
+      s.endSequence = null;
     }
     return { state: s };
   }
@@ -992,6 +1038,12 @@ export function dispose(state: ExperienceState, scene: THREE.Scene): void {
   s.fadeMesh.removeFromParent();
   s.fadeMesh.geometry.dispose();
   s.fadeMaterial.dispose();
+
+  // Clean up end sequence if still active
+  if (s.endSequence) {
+    s.endSequence.group.removeFromParent();
+    s.endSequence.dispose();
+  }
 
   // Stop all audio
   for (const audio of s.bgAudios) {

@@ -13,9 +13,9 @@ const TIMING = {
 	sendPause: 2.0,
 	sendDuration: 2.5,
 	readyHold: 1.0,
-	crossfadeDuration: 0.8,
+	crossfadeDuration: 1.2,
 	rainDuration: 2.5,
-	fadeDuration: 1.0,
+	fadeDuration: 1.2,
 	blackHold: 0.5,
 };
 
@@ -198,10 +198,10 @@ export class StartSequence {
 			return;
 		}
 
-		// ── Phase 6: Cross-fade (ChatGPT out, Rain in) ─────────────
+		// ── Phase 6: Cross-fade (DataGPT out, Rain in) ─────────────
 		if (t < crossfadeEnd) {
 			const p = (t - readyEnd) / TIMING.crossfadeDuration;
-			// ChatGPT fades out
+			// DataGPT fades out
 			this.screenMesh.visible = true;
 			screenMat(this.screenMesh).opacity = 1 - p;
 			// Rain fades in, no zoom yet
@@ -224,13 +224,12 @@ export class StartSequence {
 			return;
 		}
 
-		// ── Phase 8: Fade to black ─────────────────────────────────
+		// ── Phase 8: Fade to black (stays zoomed in) ─────────────────
 		if (t < fadeEnd) {
 			const fadeProgress = (t - rainEnd) / TIMING.fadeDuration;
 			this.updateRain(delta);
 			rainMat(this.rainMesh).opacity = 1 - fadeProgress;
-			const zoom = 1 + (1 - fadeProgress) * 12;
-			this.rainMesh.scale.setScalar(zoom);
+			this.rainMesh.scale.setScalar(13);
 			return;
 		}
 
@@ -272,7 +271,7 @@ export class StartSequence {
 		ctx.font = 'bold 18px system-ui, -apple-system, sans-serif';
 		ctx.textAlign = "center";
 		ctx.textBaseline = "middle";
-		ctx.fillText("ChatGPT", W / 2, HEADER_H / 2);
+		ctx.fillText("DataGPT", W / 2, HEADER_H / 2);
 		ctx.textAlign = "start";
 		ctx.textBaseline = "alphabetic";
 	}
@@ -306,7 +305,8 @@ export class StartSequence {
 		const bubbleH = lines.length * lineH + 30;
 
 		ctx.fillStyle = "#2a2a2a";
-		this.roundRect(ctx, bubbleX, bubbleY, bubbleW, bubbleH, 10);
+		ctx.beginPath();
+		ctx.roundRect(bubbleX, bubbleY, bubbleW, bubbleH, 10);
 		ctx.fill();
 
 		ctx.fillStyle = "#e0e0e0";
@@ -357,8 +357,10 @@ export class StartSequence {
 		const inputY = H - INPUT_BOTTOM - INPUT_H;
 		const inputW = W - PADDING * 2;
 
+		// Simple rounded rectangle input field
 		ctx.fillStyle = "#2a2a2a";
-		this.roundRect(ctx, inputX, inputY, inputW, INPUT_H, 10);
+		ctx.beginPath();
+		ctx.roundRect(inputX, inputY, inputW, INPUT_H, 8);
 		ctx.fill();
 
 		const displayed = Math.min(charsTyped, TOTAL_CHARS);
@@ -453,29 +455,6 @@ export class StartSequence {
 		}
 
 		this.rainTexture.needsUpdate = true;
-	}
-
-	// ── Helpers ───────────────────────────────────────────────────
-
-	private roundRect(
-		ctx: CanvasRenderingContext2D,
-		x: number,
-		y: number,
-		w: number,
-		h: number,
-		r: number,
-	): void {
-		ctx.beginPath();
-		ctx.moveTo(x + r, y);
-		ctx.lineTo(x + w - r, y);
-		ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-		ctx.lineTo(x + w, y + h - r);
-		ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-		ctx.lineTo(x + r, y + h);
-		ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-		ctx.lineTo(x + r, y);
-		ctx.quadraticCurveTo(x, y, x + r, y);
-		ctx.closePath();
 	}
 
 	dispose(): void {
