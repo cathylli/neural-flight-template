@@ -8,6 +8,7 @@ import { manifest as circuit } from "./circuit";
 import { manifest as circuit2 } from "./circuit2";
 import { manifest as circuit3 } from "./circuit3";
 import { manifest as network } from "./network";
+import { manifest as wfcShowcase } from "./wfc-showcase";
 
 // ── Registry ──
 //
@@ -27,6 +28,7 @@ const CATALOG: Record<string, ExperienceManifest> = {
   "circuit2": circuit2,
   "circuit3": circuit3,
   "network": network,
+  "wfc-showcase": wfcShowcase,
 };
 
 export const DEFAULT_EXPERIENCE_ID = "circuit3";

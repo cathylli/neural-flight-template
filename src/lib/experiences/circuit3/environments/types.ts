@@ -31,8 +31,8 @@ export const CHUNK_SIZE = 120;
  */
 export const CHUNK_HEIGHT = CHUNK_SIZE;
 
-/** Chunk render radius around the player (3 → a 7×7 = 49 chunk window). */
-export const RENDER_RADIUS = 3;
+/** Chunk render radius around the player (2 → a 5×5 = 25 chunk window). */
+export const RENDER_RADIUS = 2;
 
 /**
  * A single generated chunk, opaque to the ChunkManager. The manager only adds
@@ -49,8 +49,8 @@ export interface ChunkContent {
 	 * environment knows what "a valid spot" means in its own world.
 	 */
 	readonly stationSlot: THREE.Vector3 | null;
-	/** Per-frame animation hook (growth, data panels, …). `elapsed` in seconds. */
-	update(elapsed: number): void;
+	/** Per-frame animation hook (growth, data panels, …). `elapsed` in seconds, `delta` frame time. */
+	update(elapsed: number, delta?: number): void;
 	/** Free all geometries this chunk owns (shared materials belong to the env). */
 	dispose(): void;
 }
@@ -91,6 +91,8 @@ export interface Environment {
 	 * vertical environment stacks purely-visual layers on top of the ground one.
 	 */
 	readonly verticalRadius?: number;
+	/** Override the default chunk render radius for this environment. */
+	readonly renderRadius?: number;
 	/**
 	 * Build the chunk at chunk-grid coordinate (cx, cy, cz). `cy` is always 0
 	 * unless this environment set `verticalRadius > 0`; ground-based environments

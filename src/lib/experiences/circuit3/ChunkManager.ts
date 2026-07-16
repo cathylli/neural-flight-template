@@ -51,22 +51,26 @@ export class ChunkManager {
   private suppressChunkCount = true;
   /** Drives unique per-level station spawning. */
   private stationPolicy?: StationSpawnPolicy;
+  /** Chunk render radius — default from RENDER_RADIUS, overridable per-instance. */
+	private renderRadius: number;
 
-  constructor(
-    scene: THREE.Scene,
-    environment: Environment,
-    params: ChunkGenParams,
-    onChunkGenerated?: () => void,
-    stationPolicy?: StationSpawnPolicy,
-  ) {
-    this.scene = scene;
-    this.environment = environment;
-    this.params = { ...params };
-    this.onChunkGenerated = onChunkGenerated;
-    this.stationPolicy = stationPolicy;
-  }
+	constructor(
+		scene: THREE.Scene,
+		environment: Environment,
+		params: ChunkGenParams,
+		onChunkGenerated?: () => void,
+		stationPolicy?: StationSpawnPolicy,
+		renderRadius: number = RENDER_RADIUS,
+	) {
+		this.scene = scene;
+		this.environment = environment;
+		this.params = { ...params };
+		this.onChunkGenerated = onChunkGenerated;
+		this.stationPolicy = stationPolicy;
+		this.renderRadius = environment.renderRadius ?? renderRadius;
+	}
 
-  update(playerPos: THREE.Vector3, elapsed: number): void {
+  update(playerPos: THREE.Vector3, elapsed: number, delta?: number): void {
     const playerCX = Math.floor(playerPos.x / CHUNK_SIZE + 0.5);
     const playerCZ = Math.floor(playerPos.z / CHUNK_SIZE + 0.5);
     // The vertical index only matters when the active environment opts into
@@ -92,7 +96,7 @@ export class ChunkManager {
 
     // Always animate chunk growth
     for (const chunk of this.activeChunks.values()) {
-      chunk.update(elapsed);
+      chunk.update(elapsed, delta);
     }
   }
 
@@ -107,15 +111,10 @@ export class ChunkManager {
     // old 2D X/Z streaming. Keys carry all three axes so a vertical environment
     // can hold stacked layers at the same (cx, cz) without them colliding.
     const vr = this.environment.verticalRadius ?? 0;
-    // The layer that hosts stations & feeds level progression. In a 2D world it
-    // is always the ground layer (0). In a volumetric world it follows the
-    // player's current vertical layer (pcy) so the station always spawns on the
-    // layer you are flying in — otherwise a player who climbs above `cy = 0`
-    // would leave the station's layer un-streamed and it could never appear.
     const stationLayer = vr > 0 ? pcy : 0;
     const desired = new Set<string>();
-    for (let dx = -RENDER_RADIUS; dx <= RENDER_RADIUS; dx++) {
-      for (let dz = -RENDER_RADIUS; dz <= RENDER_RADIUS; dz++) {
+    for (let dx = -this.renderRadius; dx <= this.renderRadius; dx++) {
+      for (let dz = -this.renderRadius; dz <= this.renderRadius; dz++) {
         for (let dy = -vr; dy <= vr; dy++) {
           desired.add(`${pcx + dx},${pcy + dy},${pcz + dz}`);
         }
@@ -188,6 +187,7 @@ export class ChunkManager {
   ): void {
     Object.assign(this.params, params);
     this.environment = environment;
+    this.renderRadius = environment.renderRadius ?? RENDER_RADIUS;
     this.forceRegen();
   }
 

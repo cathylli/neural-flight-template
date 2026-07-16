@@ -760,7 +760,7 @@ export function tick(
 
   // Update chunk visibility / spawn new chunks around the player
   const playerPos = s.player.rig.position;
-  s.chunkManager.update(playerPos, s.elapsed);
+  s.chunkManager.update(playerPos, s.elapsed, ctx.delta);
 
   // Station trigger volumes + per-frame station animation
   s.stationManager.update(playerPos, s.elapsed, ctx.delta);

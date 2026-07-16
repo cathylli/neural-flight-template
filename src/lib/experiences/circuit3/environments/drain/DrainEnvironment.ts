@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { loadGLTF } from "$lib/three/loader";
 import { createGradientSky } from "$lib/three/gradient-sky";
 import { CHUNK_SIZE } from "../types";
 import type {
@@ -138,11 +137,12 @@ const _s = new THREE.Vector3();
 
 // ── Server model ──────────────────────────────────────────────────────────────
 
-const SERVER_URL = "/models/server.glb";
 const SERVER_COLOR = 0x0088ff;
 const SERVER_SPACING = 12; // grid spacing across entire chunk
+const SERVER_SIZE = 4;
 
-// Blue wireframe material for server racks
+// Blue wireframe cube for server racks (replaces GLB model for performance)
+const serverGeo = new THREE.BoxGeometry(SERVER_SIZE, SERVER_SIZE * 2, SERVER_SIZE);
 const serverWireMat = new THREE.MeshBasicMaterial({
 	color: SERVER_COLOR,
 	wireframe: true,
@@ -153,17 +153,25 @@ const serverWireMat = new THREE.MeshBasicMaterial({
 // ── Chunk ────────────────────────────────────────────────────────────────────
 
 const GROWTH_DURATION = 1.2; // seconds for chunk to grow in
+const MAX_TILES = GRID * GRID; // maximum tile instances per chunk
+
+const _tileMatrix = new THREE.Matrix4();
+const _tilePosition = new THREE.Vector3();
+const _tileQuaternion = new THREE.Quaternion();
+const _tileScale = new THREE.Vector3(1, 1, 1);
+const _tileEuler = new THREE.Euler(-Math.PI / 2, 0, 0);
 
 class DrainChunk implements ChunkContent {
 	readonly group = new THREE.Group();
 	readonly stationSlot: THREE.Vector3 | null;
 
-	private readonly tiles: THREE.Mesh[] = [];
-	private readonly wires: THREE.Mesh[] = [];
-	private readonly servers: THREE.Group[] = [];
+	private tileInstancedMesh: THREE.InstancedMesh;
+	private wireInstancedMesh: THREE.InstancedMesh;
+	private tileCount = 0;
+	private serverInstancedMesh: THREE.InstancedMesh | null = null;
+	private serverCount = 0;
 	private readonly spawnTime: number;
 	private grown = false;
-	/** Chunk grid coords — stored so servers can be retrofitted after async load. */
 	private readonly cx: number;
 	private readonly cz: number;
 	private readonly liveChunks: Set<DrainChunk>;
@@ -178,63 +186,65 @@ class DrainChunk implements ChunkContent {
 		drainMat: THREE.ShaderMaterial,
 		flowMat: THREE.ShaderMaterial,
 		heatMat: THREE.ShaderMaterial,
-		serverTemplate: THREE.Group | null,
-		spawnTime: number,
+		_spawnTime: number,
 		liveChunks: Set<DrainChunk>,
 	) {
 		const ox = cx * CHUNK_SIZE;
 		const oz = cz * CHUNK_SIZE;
 		this.group.position.set(ox, 0, oz);
-		this.spawnTime = spawnTime;
+		this.spawnTime = _spawnTime;
 		this.cx = cx;
 		this.cz = cz;
 		this.liveChunks = liveChunks;
 		liveChunks.add(this);
 
-		// Start scaled to 0 for growth animation
 		this.group.scale.set(1, 0.001, 1);
 
 		const half = GRID / 2;
 		const cellWorld = CELL;
-		const tileGeo = floorGeo;
 		const holeCentres: THREE.Vector3[] = [];
 
-		// Build floor grid and collect holes
+		// ── InstancedMesh for floor tiles (1 draw call instead of ~162) ──
+		this.tileInstancedMesh = new THREE.InstancedMesh(floorGeo, floorMat, MAX_TILES);
+		this.tileInstancedMesh.frustumCulled = false;
+		this.group.add(this.tileInstancedMesh);
+
+		this.wireInstancedMesh = new THREE.InstancedMesh(floorGeo, wireframeMat, MAX_TILES);
+		this.wireInstancedMesh.frustumCulled = false;
+		this.wireInstancedMesh.position.y = 0.01;
+		this.group.add(this.wireInstancedMesh);
+
+		// Build floor grid — holes get zero-scale matrix to hide them
+		_tileEuler.set(-Math.PI / 2, 0, 0);
+		_tileQuaternion.setFromEuler(_tileEuler);
+		const _holeScale = new THREE.Vector3(0, 0, 0);
 		for (let gx = 0; gx < GRID; gx++) {
 			for (let gz = 0; gz < GRID; gz++) {
-				if (isHole(cx, cz, gx, gz)) {
-					holeCentres.push(
-						new THREE.Vector3(
-							(gx - half + 0.5) * cellWorld,
-							0,
-							(gz - half + 0.5) * cellWorld,
-						),
-					);
-					continue;
-				}
-				const tile = new THREE.Mesh(tileGeo, floorMat);
-				tile.rotation.x = -Math.PI / 2;
-				tile.position.set(
+				const isH = isHole(cx, cz, gx, gz);
+				_tilePosition.set(
 					(gx - half + 0.5) * cellWorld,
 					0,
 					(gz - half + 0.5) * cellWorld,
 				);
-				this.group.add(tile);
-				this.tiles.push(tile);
-
-				// Add wireframe overlay
-				const wire = new THREE.Mesh(tileGeo, wireframeMat);
-				wire.rotation.x = -Math.PI / 2;
-				wire.position.copy(tile.position);
-				wire.position.y += 0.01; // slightly above to avoid z-fighting
-				this.group.add(wire);
-				this.wires.push(wire);
+				if (isH) {
+					// Hidden — zero scale
+					_tileMatrix.compose(_tilePosition, _tileQuaternion, _holeScale);
+					holeCentres.push(_tilePosition.clone());
+				} else {
+					_tileMatrix.compose(_tilePosition, _tileQuaternion, _tileScale);
+				}
+				this.tileInstancedMesh.setMatrixAt(this.tileCount, _tileMatrix);
+				this.wireInstancedMesh.setMatrixAt(this.tileCount, _tileMatrix);
+				this.tileCount++;
 			}
 		}
+		this.tileInstancedMesh.count = this.tileCount;
+		this.tileInstancedMesh.instanceMatrix.needsUpdate = true;
+		this.wireInstancedMesh.count = this.tileCount;
+		this.wireInstancedMesh.instanceMatrix.needsUpdate = true;
 
 		// ── Drain particles (fall through holes) + Heat (rise from holes) ──
 		if (holeCentres.length > 0) {
-			// Split holes into drain (blue, down) and heat (red, up)
 			const drainHoles: THREE.Vector3[] = [];
 			const heatHoles: THREE.Vector3[] = [];
 			for (const h of holeCentres) {
@@ -245,7 +255,6 @@ class DrainChunk implements ChunkContent {
 				}
 			}
 
-			// Drain particles (blue, falling)
 			if (drainHoles.length > 0) {
 				const total = drainHoles.length * DRAIN_COUNT;
 				const pos = new Float32Array(total * 3);
@@ -253,27 +262,21 @@ class DrainChunk implements ChunkContent {
 				let idx = 0;
 				for (const h of drainHoles) {
 					for (let i = 0; i < DRAIN_COUNT; i++) {
-						pos[idx * 3] =
-							h.x + (Math.random() - 0.5) * (CELL - GAP);
+						pos[idx * 3] = h.x + (Math.random() - 0.5) * (CELL - GAP);
 						pos[idx * 3 + 1] = 0.5;
-						pos[idx * 3 + 2] =
-							h.z + (Math.random() - 0.5) * (CELL - GAP);
+						pos[idx * 3 + 2] = h.z + (Math.random() - 0.5) * (CELL - GAP);
 						off[idx] = Math.random();
 						idx++;
 					}
 				}
 				const geo = new THREE.BufferGeometry();
-				geo.setAttribute(
-					"position",
-					new THREE.BufferAttribute(pos, 3),
-				);
+				geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
 				geo.setAttribute("aOff", new THREE.BufferAttribute(off, 1));
 				const pts = new THREE.Points(geo, drainMat);
 				pts.frustumCulled = false;
 				this.group.add(pts);
 			}
 
-			// Heat particles (red, rising)
 			if (heatHoles.length > 0) {
 				const total = heatHoles.length * HEAT_COUNT;
 				const pos = new Float32Array(total * 3);
@@ -281,20 +284,15 @@ class DrainChunk implements ChunkContent {
 				let idx = 0;
 				for (const h of heatHoles) {
 					for (let i = 0; i < HEAT_COUNT; i++) {
-						pos[idx * 3] =
-							h.x + (Math.random() - 0.5) * (CELL - GAP);
+						pos[idx * 3] = h.x + (Math.random() - 0.5) * (CELL - GAP);
 						pos[idx * 3 + 1] = 0.5;
-						pos[idx * 3 + 2] =
-							h.z + (Math.random() - 0.5) * (CELL - GAP);
+						pos[idx * 3 + 2] = h.z + (Math.random() - 0.5) * (CELL - GAP);
 						off[idx] = Math.random();
 						idx++;
 					}
 				}
 				const geo = new THREE.BufferGeometry();
-				geo.setAttribute(
-					"position",
-					new THREE.BufferAttribute(pos, 3),
-				);
+				geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
 				geo.setAttribute("aOff", new THREE.BufferAttribute(off, 1));
 				const pts = new THREE.Points(geo, heatMat);
 				pts.frustumCulled = false;
@@ -323,24 +321,8 @@ class DrainChunk implements ChunkContent {
 			this.group.add(pts);
 		}
 
-		// ── Server farm grid — spread across entire chunk ────────────────
-		if (serverTemplate) {
-			const halfChunk = (GRID * CELL) / 2;
-			for (let sx = -halfChunk + SERVER_SPACING / 2; sx < halfChunk; sx += SERVER_SPACING) {
-				for (let sz = -halfChunk + SERVER_SPACING / 2; sz < halfChunk; sz += SERVER_SPACING) {
-					// Convert world pos back to grid coords to check for holes
-					const gx = Math.floor((sx + halfChunk) / CELL);
-					const gz = Math.floor((sz + halfChunk) / CELL);
-					if (gx >= 0 && gx < GRID && gz >= 0 && gz < GRID && isHole(cx, cz, gx, gz)) {
-						continue; // skip holes
-					}
-					const server = serverTemplate.clone();
-					server.position.set(sx, 0, sz);
-					this.group.add(server);
-					this.servers.push(server);
-				}
-			}
-		}
+		// ── Server farm — InstancedMesh wireframe cubes ───────────────
+		this.buildServerInstances();
 
 		this.stationSlot =
 			params.stationWeight > 0
@@ -348,8 +330,36 @@ class DrainChunk implements ChunkContent {
 				: null;
 	}
 
+	private buildServerInstances(): void {
+		const halfChunk = (GRID * CELL) / 2;
+		const positions: THREE.Vector3[] = [];
+		for (let sx = -halfChunk + SERVER_SPACING / 2; sx < halfChunk; sx += SERVER_SPACING) {
+			for (let sz = -halfChunk + SERVER_SPACING / 2; sz < halfChunk; sz += SERVER_SPACING) {
+				const gx = Math.floor((sx + halfChunk) / CELL);
+				const gz = Math.floor((sz + halfChunk) / CELL);
+				if (gx >= 0 && gx < GRID && gz >= 0 && gz < GRID && isHole(this.cx, this.cz, gx, gz)) {
+					continue;
+				}
+				positions.push(new THREE.Vector3(sx, SERVER_SIZE, sz));
+			}
+		}
+		if (positions.length === 0) return;
+
+		this.serverInstancedMesh = new THREE.InstancedMesh(serverGeo, serverWireMat, positions.length);
+		this.serverInstancedMesh.frustumCulled = false;
+		for (let i = 0; i < positions.length; i++) {
+			_tilePosition.copy(positions[i]);
+			_tileQuaternion.identity();
+			_tileScale.set(1, 1, 1);
+			_tileMatrix.compose(_tilePosition, _tileQuaternion, _tileScale);
+			this.serverInstancedMesh.setMatrixAt(i, _tileMatrix);
+		}
+		this.serverInstancedMesh.instanceMatrix.needsUpdate = true;
+		this.group.add(this.serverInstancedMesh);
+		this.serverCount = positions.length;
+	}
+
 	update(elapsed: number): void {
-		// Growth animation
 		if (!this.grown) {
 			const t = Math.min((elapsed - this.spawnTime) / GROWTH_DURATION, 1.0);
 			const eased = 1.0 - (1.0 - t) ** 3;
@@ -358,49 +368,26 @@ class DrainChunk implements ChunkContent {
 		}
 	}
 
-	/** Whether this chunk already has server models placed. */
 	get hasServers(): boolean {
-		return this.servers.length > 0;
+		return this.serverCount > 0;
 	}
 
-	/**
-	 * Retroactively populate servers into a chunk that was built before the
-	 * GLB model finished loading. Uses the same placement logic as the
-	 * constructor.
-	 */
-	addServers(template: THREE.Group): void {
-		if (this.servers.length > 0) return;
-		const halfChunk = (GRID * CELL) / 2;
-		for (let sx = -halfChunk + SERVER_SPACING / 2; sx < halfChunk; sx += SERVER_SPACING) {
-			for (let sz = -halfChunk + SERVER_SPACING / 2; sz < halfChunk; sz += SERVER_SPACING) {
-				const gx = Math.floor((sx + halfChunk) / CELL);
-				const gz = Math.floor((sz + halfChunk) / CELL);
-				if (gx >= 0 && gx < GRID && gz >= 0 && gz < GRID && isHole(this.cx, this.cz, gx, gz)) {
-					continue;
-				}
-				const server = template.clone();
-				server.position.set(sx, 0, sz);
-				this.group.add(server);
-				this.servers.push(server);
-			}
-		}
+	addServers(_template: THREE.Group): void {
+		if (this.serverCount > 0) return;
+		this.buildServerInstances();
 	}
 
 	dispose(): void {
 		this.liveChunks.delete(this);
-		for (const t of this.tiles) {
-			t.geometry.dispose();
-		}
-		for (const s of this.servers) {
-			s.traverse((child) => {
-				if (child instanceof THREE.Mesh) {
-					child.geometry.dispose();
-				}
-			});
+		this.tileInstancedMesh.dispose();
+		this.wireInstancedMesh.dispose();
+		if (this.serverInstancedMesh) {
+			this.serverInstancedMesh.dispose();
 		}
 		for (const child of this.group.children) {
 			if (child instanceof THREE.Points || child instanceof THREE.LineSegments) {
 				if (child.material instanceof THREE.Material) child.material.dispose();
+				if (child.geometry) child.geometry.dispose();
 			}
 		}
 		this.group.clear();
@@ -447,36 +434,8 @@ export class DrainEnvironment implements Environment {
 		blending: THREE.AdditiveBlending,
 	});
 
-	private serverTemplate: THREE.Group | null = null;
-	private serverLoading = false;
 	private sky: THREE.Mesh | null = null;
-	/** All live chunks — used to retrofit servers once the GLB finishes loading. */
 	private liveChunks = new Set<DrainChunk>();
-
-	private async loadServerModel(): Promise<void> {
-		if (this.serverTemplate || this.serverLoading) return;
-		this.serverLoading = true;
-		try {
-			const gltf = await loadGLTF(SERVER_URL);
-			const model = gltf.scene;
-
-			// Apply blue wireframe material
-			model.traverse((child) => {
-				if (child instanceof THREE.Mesh) {
-					child.material = serverWireMat;
-				}
-			});
-
-			this.serverTemplate = model;
-			// Retrofit any chunks that were built before the model was ready
-			for (const chunk of this.liveChunks) {
-				if (!chunk.hasServers) chunk.addServers(model);
-			}
-		} catch (e) {
-			console.warn("Failed to load server model:", e);
-		}
-		this.serverLoading = false;
-	}
 
 	buildChunk(
 		cx: number,
@@ -485,11 +444,6 @@ export class DrainEnvironment implements Environment {
 		params: EnvironmentBuildParams,
 		spawnTime: number,
 	): ChunkContent {
-		// Start loading server model if not already loaded
-		if (!this.serverTemplate && !this.serverLoading) {
-			this.loadServerModel();
-		}
-
 		return new DrainChunk(
 			cx,
 			cz,
@@ -500,7 +454,6 @@ export class DrainEnvironment implements Environment {
 			this.drainMat,
 			this.flowMat,
 			this.heatMat,
-			this.serverTemplate,
 			spawnTime,
 			this.liveChunks,
 		);
@@ -549,9 +502,6 @@ export class DrainEnvironment implements Environment {
 			],
 		});
 		scene.add(this.sky);
-
-		// Preload server model so it's ready before the first chunks build
-		this.loadServerModel();
 	}
 
 	dispose(): void {
@@ -561,14 +511,8 @@ export class DrainEnvironment implements Environment {
 		this.drainMat.dispose();
 		this.flowMat.dispose();
 		this.heatMat.dispose();
+		serverGeo.dispose();
 		serverWireMat.dispose();
-		if (this.serverTemplate) {
-			this.serverTemplate.traverse((child) => {
-				if (child instanceof THREE.Mesh) {
-					child.geometry.dispose();
-				}
-			});
-		}
 		if (this.sky) {
 			this.sky.parent?.remove(this.sky);
 			this.sky.geometry.dispose();
